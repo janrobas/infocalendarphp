@@ -20,7 +20,6 @@ use App\Support\SecretRedactor;
 use Http\Discovery\Psr17Factory;
 use Mcp\Server\Transport\Http\Middleware\AuthorizationMiddleware;
 use Mcp\Server\Transport\Http\Middleware\CorsMiddleware;
-use Mcp\Server\Transport\Http\Middleware\DnsRebindingProtectionMiddleware;
 use Mcp\Server\Transport\Http\OAuth\ProtectedResourceMetadata;
 use Mcp\Server\Transport\StreamableHttpTransport;
 use Psr\Http\Message\ResponseInterface;
@@ -162,6 +161,17 @@ try {
     $psr17 = new Psr17Factory();
     $request = $psr17->createServerRequestFromGlobals();
 
+    // Proxies terminate TLS, so $_SERVER['HTTPS']/SERVER_PORT are often wrong
+    // even though the public site is HTTPS. Force the scheme and port from
+    // APP_URL so the OAuth metadata URL in the WWW-Authenticate header is
+    // correct (ChatGPT rejects a wrong scheme or a dangling port).
+    $appUrlParts = parse_url($config->appUrl());
+    if (\is_array($appUrlParts) && isset($appUrlParts['scheme'])) {
+        $uri = $request->getUri()->withScheme(strtolower($appUrlParts['scheme']));
+        $uri = $uri->withPort(isset($appUrlParts['port']) ? (int) $appUrlParts['port'] : null);
+        $request = $request->withUri($uri);
+    }
+
     $clients = new ClientStore(new FileStore($dataDir.'/oauth/clients'));
     $tokens = TokenStore::create($dataDir);
     $authServer = new AuthorizationServer($config, $clients, $tokens);
@@ -301,13 +311,14 @@ function handleMcp(
     TokenValidator $tokenValidator,
     \Mcp\Server $mcpServer,
 ) {
-    $host = strtolower((string) parse_url($config->appUrl(), \PHP_URL_HOST));
-
+    // Note: no DnsRebindingProtectionMiddleware here. This is a public HTTPS
+    // server already gated by OAuth Bearer tokens and fronted by a web server
+    // that validates Host; strict Origin checking would reject ChatGPT's
+    // connector (which may send an Origin header).
     $transport = new StreamableHttpTransport(
         $request,
         middleware: [
             new CorsMiddleware(),
-            new DnsRebindingProtectionMiddleware([$host]),
             new AuthorizationMiddleware($tokenValidator, $metadata),
         ],
     );

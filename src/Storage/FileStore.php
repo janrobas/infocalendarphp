@@ -24,11 +24,6 @@ final class FileStore
         }
     }
 
-    public function directory(): string
-    {
-        return $this->directory;
-    }
-
     /**
      * Atomically write a record. When $expiresIn is provided the record expires
      * that many seconds from now.

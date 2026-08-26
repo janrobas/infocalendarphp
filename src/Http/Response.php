@@ -50,17 +50,6 @@ final class Response
         );
     }
 
-    public static function text(string $text, int $status = 200): ResponseInterface
-    {
-        $factory = self::factory();
-
-        return self::secure(
-            $factory->createResponse($status)
-                ->withHeader('Content-Type', 'text/plain; charset=utf-8')
-                ->withBody($factory->createStream($text)),
-        );
-    }
-
     public static function redirect(string $url, int $status = 302): ResponseInterface
     {
         $factory = self::factory();

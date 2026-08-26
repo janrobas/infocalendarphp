@@ -202,7 +202,7 @@ class CalDavClient
     {
         $response = $this->request('PUT', $href, $ical, [
             'Content-Type' => 'text/calendar; charset=utf-8',
-            'If-Match' => $etag,
+            'If-Match' => $this->quoteEtag($etag),
         ]);
 
         $status = (int) $response['statusCode'];
@@ -216,7 +216,7 @@ class CalDavClient
     public function deleteEvent(string $href, string $etag): void
     {
         $response = $this->request('DELETE', $href, null, [
-            'If-Match' => $etag,
+            'If-Match' => $this->quoteEtag($etag),
         ]);
 
         $status = (int) $response['statusCode'];
@@ -472,6 +472,20 @@ class CalDavClient
     private function eventUrl(string $calendarHref, string $uid): string
     {
         return rtrim($calendarHref, '/').'/'.rawurlencode($uid).'.ics';
+    }
+
+    /**
+     * Entity-tags in an If-Match / If-None-Match header must be a quoted
+     * string (RFC 9110). ETags are stored unquoted (extractEtag / parseMultistatus
+     * strip the surrounding quotes), so re-add them before sending.
+     */
+    private function quoteEtag(string $etag): string
+    {
+        if ('' === $etag || '*' === $etag || str_starts_with($etag, '"')) {
+            return $etag;
+        }
+
+        return '"'.$etag.'"';
     }
 
     /**

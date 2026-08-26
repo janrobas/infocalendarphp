@@ -209,8 +209,7 @@ final class CalendarService
             $this->assertValidRange($updates['start'], $updates['end']);
         }
 
-        $merged = Ics::merge($raw['ical'], $updates);
-        $newEtag = $this->client->updateEvent($raw['href'], $raw['etag'], $merged);
+        [$merged, $newEtag] = $this->updateWithConflictRetry($href, $eventId, $raw, $updates);
 
         $event = Ics::parse($merged, $newEtag, $calendarId);
 
@@ -229,9 +228,64 @@ final class CalendarService
             throw new CalendarException('Event not found.');
         }
 
-        $this->client->deleteEvent($raw['href'], $raw['etag']);
+        $this->deleteWithConflictRetry($href, $eventId, $raw);
 
         return ['deleted' => true, 'event_id' => $eventId];
+    }
+
+    /**
+     * Apply an update, and on an ETag conflict (HTTP 412, "Event was modified by
+     * another client") re-read the event once and retry. The event genuinely
+     * changed on the server between our read and our write, so the fresh read
+     * yields the current ETag to use for the conditional write.
+     *
+     * @param array<string, mixed> $raw
+     * @param array<string, mixed> $updates
+     *
+     * @return array{0: string, 1: string} the merged iCalendar body and new ETag
+     */
+    private function updateWithConflictRetry(string $href, string $eventId, array $raw, array $updates): array
+    {
+        $merged = Ics::merge($raw['ical'], $updates);
+
+        try {
+            $newEtag = $this->client->updateEvent($raw['href'], $raw['etag'], $merged);
+        } catch (CalDavException $e) {
+            if (412 !== $e->status) {
+                throw $e;
+            }
+
+            $fresh = $this->client->getEventByUid($href, $eventId);
+            if (null === $fresh) {
+                throw $e;
+            }
+
+            $merged = Ics::merge($fresh['ical'], $updates);
+            $newEtag = $this->client->updateEvent($fresh['href'], $fresh['etag'], $merged);
+        }
+
+        return [$merged, $newEtag];
+    }
+
+    /**
+     * @param array<string, mixed> $raw
+     */
+    private function deleteWithConflictRetry(string $href, string $eventId, array $raw): void
+    {
+        try {
+            $this->client->deleteEvent($raw['href'], $raw['etag']);
+        } catch (CalDavException $e) {
+            if (412 !== $e->status) {
+                throw $e;
+            }
+
+            $fresh = $this->client->getEventByUid($href, $eventId);
+            if (null === $fresh) {
+                throw $e;
+            }
+
+            $this->client->deleteEvent($fresh['href'], $fresh['etag']);
+        }
     }
 
     // ---- internals ----

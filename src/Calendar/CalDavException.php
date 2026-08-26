@@ -1,0 +1,20 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Calendar;
+
+use RuntimeException;
+
+final class CalDavException extends RuntimeException
+{
+    public static function forStatus(int $status, string $notFoundMessage = 'Calendar not found.'): self
+    {
+        return new self(match ($status) {
+            401, 403 => 'Infomaniak authentication failed.',
+            404 => $notFoundMessage,
+            412 => 'Event was modified by another client.',
+            default => sprintf('Calendar server unavailable (HTTP %d).', $status),
+        });
+    }
+}

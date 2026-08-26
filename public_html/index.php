@@ -243,14 +243,6 @@ function route(
     $method = $request->getMethod();
     $path = $request->getUri()->getPath();
 
-    if ('GET' === $method && '/' === $path) {
-        return Response::json([
-            'service' => 'Infomaniak Calendar MCP',
-            'health' => $config->appUrl().'/health',
-            'mcp' => $config->mcpUrl(),
-        ]);
-    }
-
     if ('GET' === $method && '/health' === $path) {
         return Response::json(['status' => 'ok']);
     }
@@ -304,9 +296,10 @@ function route(
         return $oauth->token($request);
     }
 
-    // The MCP endpoint is /mcp. Also accept the base URL (POST) so the server
-    // works even if someone enters the bare domain in a client.
-    if ('/mcp' === $path || ('/' === $path && 'POST' === $method)) {
+    // The MCP endpoint is /mcp, but accept the base URL too. Some clients
+    // (including ChatGPT's connector) probe the bare domain, so both must
+    // answer with the OAuth challenge instead of a 200 landing page.
+    if ('/mcp' === $path || '/' === $path) {
         return handleMcp($request, $config, $metadata, $tokenValidator, $mcpFactory());
     }
 

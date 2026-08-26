@@ -4,6 +4,10 @@ A small, single-user PHP application that exposes your **Infomaniak Calendar**
 to **ChatGPT** over the [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP), using the official PHP MCP SDK.
 
+> **Disclaimer:** This project was vibe-coded with AI assistance. It works for
+> its author's single-user use case, but review the code before relying on it
+> for anything important.
+
 It is not a framework, SaaS product, or admin panel. It is one PHP application
 with two jobs:
 

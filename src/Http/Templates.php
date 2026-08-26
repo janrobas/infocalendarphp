@@ -14,13 +14,14 @@ final class Templates
         $errorHtml = null !== $error
             ? '<p class="error">'.self::e($error).'</p>'
             : '';
+        $id = self::e($authRequestId);
 
         return self::layout('Sign in', <<<HTML
             <h1>Sign in</h1>
             <p class="muted">Sign in to authorize calendar access.</p>
             {$errorHtml}
             <form method="post" action="/login">
-                <input type="hidden" name="id" value="{$authRequestId}">
+                <input type="hidden" name="id" value="{$id}">
                 <label for="username">Username</label>
                 <input type="text" id="username" name="username" autocomplete="username" required autofocus>
                 <label for="password">Password</label>
@@ -32,20 +33,24 @@ final class Templates
 
     public static function consent(string $authRequestId, string $clientName, string $scope): string
     {
+        $id = self::e($authRequestId);
+        $name = self::e($clientName);
+        $scopes = self::e($scope);
+
         return self::layout('Authorize access', <<<HTML
             <h1>Authorize access</h1>
             <p class="muted">
-                <strong>{$clientName}</strong> is requesting access to your
+                <strong>{$name}</strong> is requesting access to your
                 <strong>Infomaniak Calendar</strong>.
             </p>
-            <p class="muted">Requested access: <code>{$scope}</code></p>
+            <p class="muted">Requested access: <code>{$scopes}</code></p>
             <form method="post" action="/consent" class="actions">
-                <input type="hidden" name="id" value="{$authRequestId}">
+                <input type="hidden" name="id" value="{$id}">
                 <input type="hidden" name="action" value="approve">
                 <button type="submit" class="primary">Allow access</button>
             </form>
             <form method="post" action="/consent" class="actions">
-                <input type="hidden" name="id" value="{$authRequestId}">
+                <input type="hidden" name="id" value="{$id}">
                 <input type="hidden" name="action" value="deny">
                 <button type="submit" class="secondary">Cancel</button>
             </form>

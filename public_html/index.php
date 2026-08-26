@@ -256,12 +256,19 @@ function route(
     }
 
     if ('GET' === $method && '/health/caldav' === $path) {
+        $calendar = $calendarFactory();
+
         try {
-            $calendarFactory()->listCalendars();
+            $calendar->listCalendars();
 
             return Response::json(['status' => 'ok']);
         } catch (\App\Calendar\CalDavException $e) {
-            return Response::json(['status' => 'unavailable', 'error' => $e->getMessage()], 503);
+            $data = ['status' => 'unavailable', 'error' => $e->getMessage()];
+            if ($config->isDebug()) {
+                $data['trace'] = $calendar->debugTrace();
+            }
+
+            return Response::json($data, 503);
         } catch (Throwable) {
             return Response::json(['status' => 'unavailable', 'error' => 'Calendar server unavailable.'], 503);
         }

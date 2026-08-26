@@ -27,6 +27,13 @@ class CalDavClient
     ) {
     }
 
+    /**
+     * Step-by-step record of the last discovery attempt, used for diagnostics.
+     *
+     * @var list<array<string, mixed>>
+     */
+    public array $debugTrace = [];
+
     public static function create(string $baseUri, string $username, string $password): self
     {
         $baseUri = rtrim($baseUri, '/').'/';
@@ -50,10 +57,13 @@ class CalDavClient
      */
     public function discoverCalendars(): array
     {
+        $this->debugTrace = [];
+
         foreach ($this->homeCandidates() as $candidate) {
             try {
                 $calendars = $this->listCalendars($candidate);
             } catch (CalDavException $e) {
+                $this->debugTrace[] = ['home' => $candidate, 'status' => $e->status, 'error' => $e->getMessage()];
                 if (404 === $e->status) {
                     continue;
                 }
@@ -61,6 +71,7 @@ class CalDavClient
                 throw $e;
             }
 
+            $this->debugTrace[] = ['home' => $candidate, 'status' => 200, 'calendars' => \count($calendars)];
             if ([] !== $calendars) {
                 return $calendars;
             }
@@ -149,17 +160,23 @@ class CalDavClient
 
     private function propFindHref(string $url, string $property): ?string
     {
+        $label = '' === $url ? '(root)' : $url;
+
         try {
             $result = $this->client->propFind($url, [$property], 0);
         } catch (\Sabre\HTTP\ClientHttpException $e) {
+            $this->debugTrace[] = ['propfind' => $label, 'status' => $e->getHttpStatus()];
             if (404 === $e->getHttpStatus()) {
                 return null;
             }
 
             throw CalDavException::forStatus($e->getHttpStatus());
         } catch (\Sabre\HTTP\ClientException) {
+            $this->debugTrace[] = ['propfind' => $label, 'status' => 0, 'error' => 'network'];
             throw new CalDavException('Calendar server unavailable.');
         }
+
+        $this->debugTrace[] = ['propfind' => $label, 'status' => 200];
 
         $value = $result[$property] ?? null;
         if ($value instanceof Href) {

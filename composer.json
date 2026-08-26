@@ -1,6 +1,6 @@
 {
     "name": "infomaniak/mcp-calendar",
-    "description": "Personal Infomaniak Calendar MCP server for ChatGPT Edu (single-user)",
+    "description": "Personal Infomaniak Calendar MCP server for ChatGPT (single-user)",
     "type": "project",
     "license": "MIT",
     "require": {

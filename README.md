@@ -1,7 +1,7 @@
 # Infomaniak Calendar MCP Server
 
 A small, single-user PHP application that exposes your **Infomaniak Calendar**
-to **ChatGPT Edu** over the [Model Context Protocol](https://modelcontextprotocol.io)
+to **ChatGPT** over the [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP), using the official PHP MCP SDK.
 
 It is not a framework, SaaS product, or admin panel. It is one PHP application
@@ -12,7 +12,7 @@ with two jobs:
    …) over MCP Streamable HTTP, backed by the live Infomaniak CalDAV server.
 
 ```
-ChatGPT Edu
+ChatGPT
     |  HTTPS  +  OAuth 2.1 + PKCE
     v
 PHP MCP server  (/mcp)
@@ -320,7 +320,7 @@ Supported endpoints:
 
 ---
 
-## Connecting to ChatGPT Edu
+## Connecting to ChatGPT
 
 > The ChatGPT UI changes over time. Refer to the current OpenAI documentation
 > (help.openai.com "Apps in ChatGPT" and developers.openai.com "Authentication")

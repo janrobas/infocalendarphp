@@ -11,15 +11,18 @@ use Mcp\Exception\ToolCallException;
 use Mcp\Schema\ToolAnnotations;
 use Mcp\Server;
 use Mcp\Server\Session\FileSessionStore;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 
 /**
  * Builds the MCP server and registers the calendar tools.
  */
 final class McpServer
 {
-    public static function build(CalendarService $calendar, string $sessionDir): Server
+    public static function build(CalendarService $calendar, string $sessionDir, ?LoggerInterface $logger = null): Server
     {
         return Server::builder()
+            ->setLogger($logger ?? new NullLogger())
             ->setServerInfo(
                 name: 'infomaniak-calendar',
                 version: '1.0.0',

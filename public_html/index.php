@@ -203,9 +203,9 @@ try {
         resourceName: 'Infomaniak Calendar',
     );
 
-    $mcpFactory = static fn (): \Mcp\Server => McpServer::build($calendarFactory(), $dataDir.'/sessions');
+    $mcpFactory = static fn (): \Mcp\Server => McpServer::build($calendarFactory(), $dataDir.'/sessions', $logger);
 
-    $response = route($request, $config, $oauth, $authServer, $metadata, $calendarFactory, $tokenValidator, $mcpFactory);
+    $response = route($request, $config, $oauth, $authServer, $metadata, $calendarFactory, $tokenValidator, $mcpFactory, $logger);
 
     Response::emit($response);
 } catch (\Throwable $e) {
@@ -239,6 +239,7 @@ function route(
     \Closure $calendarFactory,
     TokenValidator $tokenValidator,
     \Closure $mcpFactory,
+    FileLogger $logger,
 ) {
     $method = $request->getMethod();
     $path = $request->getUri()->getPath();
@@ -300,7 +301,7 @@ function route(
     // (including ChatGPT's connector) probe the bare domain, so both must
     // answer with the OAuth challenge instead of a 200 landing page.
     if ('/mcp' === $path || '/' === $path) {
-        return handleMcp($request, $config, $metadata, $tokenValidator, $mcpFactory());
+        return handleMcp($request, $config, $metadata, $tokenValidator, $mcpFactory(), $logger);
     }
 
     return Response::json(['error' => 'not_found'], 404);
@@ -315,6 +316,7 @@ function handleMcp(
     ProtectedResourceMetadata $metadata,
     TokenValidator $tokenValidator,
     \Mcp\Server $mcpServer,
+    FileLogger $logger,
 ) {
     // Note: no DnsRebindingProtectionMiddleware here. This is a public HTTPS
     // server already gated by OAuth Bearer tokens and fronted by a web server
@@ -322,6 +324,7 @@ function handleMcp(
     // connector (which may send an Origin header).
     $transport = new StreamableHttpTransport(
         $request,
+        logger: $logger,
         middleware: [
             new CorsMiddleware(),
             new AuthorizationMiddleware($tokenValidator, $metadata),

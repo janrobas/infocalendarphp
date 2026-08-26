@@ -94,7 +94,7 @@ class CalDavClient
     public function createEvent(string $calendarHref, string $uid, string $ical): array
     {
         $url = $this->eventUrl($calendarHref, $uid);
-        $response = $this->client->request('PUT', $url, $ical, [
+        $response = $this->request('PUT', $url, $ical, [
             'Content-Type' => 'text/calendar; charset=utf-8',
             'If-None-Match' => '*',
         ]);
@@ -115,7 +115,7 @@ class CalDavClient
      */
     public function updateEvent(string $href, string $etag, string $ical): string
     {
-        $response = $this->client->request('PUT', $href, $ical, [
+        $response = $this->request('PUT', $href, $ical, [
             'Content-Type' => 'text/calendar; charset=utf-8',
             'If-Match' => $etag,
         ]);
@@ -130,7 +130,7 @@ class CalDavClient
 
     public function deleteEvent(string $href, string $etag): void
     {
-        $response = $this->client->request('DELETE', $href, null, [
+        $response = $this->request('DELETE', $href, null, [
             'If-Match' => $etag,
         ]);
 
@@ -142,7 +142,7 @@ class CalDavClient
 
     private function propFindHref(string $url, string $property): ?string
     {
-        $result = $this->client->propFind($url, [$property], 0);
+        $result = $this->guarded(fn () => $this->client->propFind($url, [$property], 0));
 
         $value = $result[$property] ?? null;
         if ($value instanceof Href) {
@@ -163,12 +163,12 @@ class CalDavClient
      */
     private function listCalendars(string $home): array
     {
-        $result = $this->client->propFind($home, [
+        $result = $this->guarded(fn () => $this->client->propFind($home, [
             '{DAV:}resourcetype',
             '{DAV:}displayname',
             '{http://apple.com/ns/ical/}calendar-color',
             '{'.self::CALDAV_NS.'}calendar-description',
-        ], 1);
+        ], 1));
 
         $calendars = [];
         foreach ($result as $href => $props) {
@@ -234,7 +234,7 @@ class CalDavClient
      */
     private function report(string $calendarHref, string $xml): array
     {
-        $response = $this->client->request('REPORT', $calendarHref, $xml, [
+        $response = $this->request('REPORT', $calendarHref, $xml, [
             'Content-Type' => 'application/xml; charset=utf-8',
             'Depth' => '1',
         ]);
@@ -245,6 +245,36 @@ class CalDavClient
         }
 
         return $response;
+    }
+
+    /**
+     * Wrap a raw HTTP request, converting network-level failures into a safe
+     * CalDavException.
+     *
+     * @return array{body: string, statusCode: int, headers: array<string, string>}
+     */
+    private function request(string $method, string $url, ?string $body, array $headers): array
+    {
+        try {
+            return $this->client->request($method, $url, $body, $headers);
+        } catch (\Sabre\HTTP\ClientException) {
+            throw new CalDavException('Calendar server unavailable.');
+        }
+    }
+
+    /**
+     * Wrap a sabre call that may throw HTTP or network exceptions (e.g.
+     * propFind), converting them into safe, specific CalDavException messages.
+     */
+    private function guarded(callable $fn, string $notFoundMessage = 'Calendar not found.')
+    {
+        try {
+            return $fn();
+        } catch (\Sabre\HTTP\ClientHttpException $e) {
+            throw CalDavException::forStatus($e->getHttpStatus(), $notFoundMessage);
+        } catch (\Sabre\HTTP\ClientException) {
+            throw new CalDavException('Calendar server unavailable.');
+        }
     }
 
     /**

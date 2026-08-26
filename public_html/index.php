@@ -260,8 +260,10 @@ function route(
             $calendarFactory()->listCalendars();
 
             return Response::json(['status' => 'ok']);
+        } catch (\App\Calendar\CalDavException $e) {
+            return Response::json(['status' => 'unavailable', 'error' => $e->getMessage()], 503);
         } catch (Throwable) {
-            return Response::json(['status' => 'unavailable'], 503);
+            return Response::json(['status' => 'unavailable', 'error' => 'Calendar server unavailable.'], 503);
         }
     }
 

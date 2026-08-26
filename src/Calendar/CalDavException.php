@@ -8,6 +8,11 @@ use RuntimeException;
 
 final class CalDavException extends RuntimeException
 {
+    public function __construct(string $message, public readonly ?int $status = null)
+    {
+        parent::__construct($message);
+    }
+
     public static function forStatus(int $status, string $notFoundMessage = 'Calendar not found.'): self
     {
         return new self(match ($status) {
@@ -15,6 +20,6 @@ final class CalDavException extends RuntimeException
             404 => $notFoundMessage,
             412 => 'Event was modified by another client.',
             default => sprintf('Calendar server unavailable (HTTP %d).', $status),
-        });
+        }, $status);
     }
 }

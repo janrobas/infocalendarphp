@@ -22,13 +22,17 @@ class CalDavClient
 
     public function __construct(
         private readonly SabreClient $client,
+        private readonly string $baseUri = '',
+        private readonly string $username = '',
     ) {
     }
 
     public static function create(string $baseUri, string $username, string $password): self
     {
+        $baseUri = rtrim($baseUri, '/').'/';
+
         $client = new SabreClient([
-            'baseUri' => rtrim($baseUri, '/').'/',
+            'baseUri' => $baseUri,
             'userName' => $username,
             'password' => $password,
             'authType' => SabreClient::AUTH_BASIC,
@@ -38,7 +42,7 @@ class CalDavClient
         $client->propertyMap['{DAV:}current-user-principal'] = Href::class;
         $client->propertyMap['{urn:ietf:params:xml:ns:caldav}calendar-home-set'] = Href::class;
 
-        return new self($client);
+        return new self($client, $baseUri, $username);
     }
 
     /**
@@ -46,20 +50,23 @@ class CalDavClient
      */
     public function discoverCalendars(): array
     {
-        $principal = $this->propFindHref('', '{DAV:}current-user-principal');
-        $home = null !== $principal
-            ? $this->propFindHref($principal, '{'.self::CALDAV_NS.'}calendar-home-set')
-            : null;
+        foreach ($this->homeCandidates() as $candidate) {
+            try {
+                $calendars = $this->listCalendars($candidate);
+            } catch (CalDavException $e) {
+                if (404 === $e->status) {
+                    continue;
+                }
 
-        if (null === $home) {
-            $home = $this->propFindHref('', '{'.self::CALDAV_NS.'}calendar-home-set');
+                throw $e;
+            }
+
+            if ([] !== $calendars) {
+                return $calendars;
+            }
         }
 
-        if (null === $home) {
-            throw new CalDavException('Unable to discover the calendar home on the Infomaniak server.');
-        }
-
-        return $this->listCalendars($home);
+        throw new CalDavException('Unable to discover calendars on the Infomaniak server.');
     }
 
     /**
@@ -142,7 +149,17 @@ class CalDavClient
 
     private function propFindHref(string $url, string $property): ?string
     {
-        $result = $this->guarded(fn () => $this->client->propFind($url, [$property], 0));
+        try {
+            $result = $this->client->propFind($url, [$property], 0);
+        } catch (\Sabre\HTTP\ClientHttpException $e) {
+            if (404 === $e->getHttpStatus()) {
+                return null;
+            }
+
+            throw CalDavException::forStatus($e->getHttpStatus());
+        } catch (\Sabre\HTTP\ClientException) {
+            throw new CalDavException('Calendar server unavailable.');
+        }
 
         $value = $result[$property] ?? null;
         if ($value instanceof Href) {
@@ -156,6 +173,58 @@ class CalDavClient
         }
 
         return null;
+    }
+
+    /**
+     * Candidate calendar-home URLs, in order: standard discovery first, then
+     * common per-account paths for the sabre/dav server Infomaniak uses.
+     *
+     * @return list<string>
+     */
+    private function homeCandidates(): array
+    {
+        $homes = [];
+
+        $principal = $this->propFindHref('', '{DAV:}current-user-principal');
+        if (null !== $principal) {
+            $home = $this->propFindHref($principal, '{'.self::CALDAV_NS.'}calendar-home-set');
+            if (null !== $home) {
+                $homes[] = $home;
+            }
+        }
+
+        $home = $this->propFindHref('', '{'.self::CALDAV_NS.'}calendar-home-set');
+        if (null !== $home) {
+            $homes[] = $home;
+        }
+
+        foreach ($this->guessedHomes() as $guess) {
+            $homes[] = $guess;
+        }
+
+        return array_values(array_unique($homes));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function guessedHomes(): array
+    {
+        if ('' === $this->username) {
+            return [];
+        }
+
+        $base = $this->baseUri;
+        $users = [$this->username, rawurlencode($this->username)];
+
+        $candidates = [];
+        foreach (['calendars', 'principals'] as $segment) {
+            foreach ($users as $user) {
+                $candidates[] = rtrim($base, '/').'/'.$segment.'/'.$user.'/';
+            }
+        }
+
+        return array_values(array_unique($candidates));
     }
 
     /**

@@ -52,28 +52,45 @@ class CalDavClient
             .'<c:calendar-home-set/><c:calendar-user-address-set/>'
             .'</d:prop></d:propfind>';
 
-        $probe = function (string $path) use (&$trace, $body): void {
+        $probe = function (string $path, int $depth) use (&$trace, $body): void {
             $label = '' === $path ? '(root)' : $path;
 
             try {
                 $response = $this->client->request('PROPFIND', $path, $body, [
-                    'Depth' => '0',
+                    'Depth' => (string) $depth,
                     'Content-Type' => 'application/xml; charset=utf-8',
                 ]);
-                $trace[] = ['probe' => $label, 'status' => $response['statusCode'], 'body' => $this->shortBody($response['body'])];
+                $trace[] = ['probe' => $label, 'depth' => $depth, 'status' => $response['statusCode'], 'body' => $this->shortBody($response['body'])];
             } catch (\Throwable $e) {
-                $trace[] = ['probe' => $label, 'error' => $e->getMessage()];
+                $trace[] = ['probe' => $label, 'depth' => $depth, 'error' => $e->getMessage()];
             }
         };
 
-        $probe('');
-        $probe('/principals/');
-        $probe('/calendars/');
+        $probe('', 0);
+        $probe('/principals/', 1);
+        $probe('/calendars/', 1);
 
         $principal = $this->propFindHref('', '{DAV:}current-user-principal');
         if (null !== $principal) {
             $trace[] = ['principal_from_root' => $principal];
-            $probe($principal);
+            $probe($principal, 0);
+        }
+
+        // Probe common alternative principal names (local part, domain, dotted
+        // email) since the server reported "Principal with name X not found".
+        $parts = explode('@', $this->username, 2);
+        $local = $parts[0] ?? '';
+        $domain = $parts[1] ?? '';
+        $variants = array_values(array_unique(array_filter([
+            $local,
+            $domain,
+            '' === $local || '' === $domain ? '' : $local.'.'.$domain,
+        ])));
+
+        foreach ($variants as $variant) {
+            foreach (['principals', 'calendars'] as $segment) {
+                $probe('/'.$segment.'/'.$variant.'/', 0);
+            }
         }
 
         return $trace;

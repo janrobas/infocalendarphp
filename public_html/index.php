@@ -304,7 +304,9 @@ function route(
         return $oauth->token($request);
     }
 
-    if ('/mcp' === $path) {
+    // The MCP endpoint is /mcp. Also accept the base URL (POST) so the server
+    // works even if someone enters the bare domain in a client.
+    if ('/mcp' === $path || ('/' === $path && 'POST' === $method)) {
         return handleMcp($request, $config, $metadata, $tokenValidator, $mcpFactory());
     }
 

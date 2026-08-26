@@ -266,6 +266,7 @@ function route(
             $data = ['status' => 'unavailable', 'error' => $e->getMessage()];
             if ($config->isDebug()) {
                 $data['trace'] = $calendar->debugTrace();
+                $data['probe'] = $calendar->debugDiscovery();
             }
 
             return Response::json($data, 503);

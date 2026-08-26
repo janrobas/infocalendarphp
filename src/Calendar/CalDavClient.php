@@ -34,6 +34,56 @@ class CalDavClient
      */
     public array $debugTrace = [];
 
+    /**
+     * Deep probe: sends a PROPFIND with the common discovery properties to the
+     * well-known paths and returns the raw responses. Used to figure out how a
+     * server that does not follow the standard layout is structured.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function debugDiscovery(): array
+    {
+        $trace = [];
+
+        $body = '<?xml version="1.0" encoding="utf-8"?>'
+            .'<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+            .'<d:prop>'
+            .'<d:current-user-principal/><d:principal-URL/><d:resourcetype/><d:displayname/>'
+            .'<c:calendar-home-set/><c:calendar-user-address-set/>'
+            .'</d:prop></d:propfind>';
+
+        $probe = function (string $path) use (&$trace, $body): void {
+            $label = '' === $path ? '(root)' : $path;
+
+            try {
+                $response = $this->client->request('PROPFIND', $path, $body, [
+                    'Depth' => '0',
+                    'Content-Type' => 'application/xml; charset=utf-8',
+                ]);
+                $trace[] = ['probe' => $label, 'status' => $response['statusCode'], 'body' => $this->shortBody($response['body'])];
+            } catch (\Throwable $e) {
+                $trace[] = ['probe' => $label, 'error' => $e->getMessage()];
+            }
+        };
+
+        $probe('');
+        $probe('/principals/');
+        $probe('/calendars/');
+
+        $principal = $this->propFindHref('', '{DAV:}current-user-principal');
+        if (null !== $principal) {
+            $trace[] = ['principal_from_root' => $principal];
+            $probe($principal);
+        }
+
+        return $trace;
+    }
+
+    private function shortBody(string $body): string
+    {
+        return strlen($body) > 800 ? substr($body, 0, 800).' …[truncated]' : $body;
+    }
+
     public static function create(string $baseUri, string $username, string $password): self
     {
         $baseUri = rtrim($baseUri, '/').'/';

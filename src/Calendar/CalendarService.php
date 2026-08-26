@@ -25,6 +25,14 @@ final class CalendarService
     }
 
     /**
+     * @return list<array<string, mixed>>
+     */
+    public function debugDiscovery(): array
+    {
+        return $this->client->debugDiscovery();
+    }
+
+    /**
      * @return array{calendars: list<array<string, mixed>>}
      */
     public function listCalendars(): array

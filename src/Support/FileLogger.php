@@ -27,6 +27,7 @@ final class FileLogger extends AbstractLogger
     public function __construct(
         private readonly string $path,
         private readonly int $minimumLevel = 200,
+        private readonly ?SecretRedactor $redactor = null,
     ) {
     }
 
@@ -39,12 +40,21 @@ final class FileLogger extends AbstractLogger
             return;
         }
 
+        $message = (string) $message;
+        $contextJson = '' === $context ? '' : (string) json_encode($context, \JSON_UNESCAPED_SLASHES);
+
+        if (null !== $this->redactor) {
+            $message = $this->redactor->redact($message);
+            $contextJson = $this->redactor->redact($contextJson);
+        }
+
         $line = sprintf(
-            '[%s] %s: %s %s',
+            '[%s] %s: %s%s%s',
             gmdate('c'),
             strtoupper($level),
-            (string) $message,
-            '' === $context ? '' : json_encode($context, \JSON_UNESCAPED_SLASHES),
+            $message,
+            '' === $contextJson ? '' : ' ',
+            $contextJson,
         ).\PHP_EOL;
 
         @file_put_contents($this->path, $line, \FILE_APPEND | \LOCK_EX);

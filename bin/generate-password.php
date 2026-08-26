@@ -8,9 +8,10 @@ declare(strict_types=1);
  * Usage:
  *   php bin/generate-password.php "your-password"
  *   php bin/generate-password.php           # prompts on STDIN
+ *
+ * This script only uses built-in PHP functions, so it runs on any PHP version
+ * (5.5+) — it does not load Composer.
  */
-
-require __DIR__.'/../vendor/autoload.php';
 
 $password = $argv[1] ?? null;
 

@@ -1,8 +1,9 @@
-# Infomaniak Calendar MCP Server
+# Infomaniak Calendar & Mail MCP Server
 
 A small, single-user PHP application that exposes your **Infomaniak Calendar**
-to **ChatGPT** over the [Model Context Protocol](https://modelcontextprotocol.io)
-(MCP), using the official PHP MCP SDK.
+and **Infomaniak Mail** to **ChatGPT** over the
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP), using the
+official PHP MCP SDK.
 
 > **Disclaimer:** This project was vibe-coded with AI assistance. It works for
 > its author's single-user use case, but review the code before relying on it
@@ -13,22 +14,25 @@ with two jobs:
 
 1. Authenticate ChatGPT using OAuth 2.1 (authorization code + PKCE).
 2. Expose calendar operations (`list_calendars`, `get_events`, `create_event`,
-   …) over MCP Streamable HTTP, backed by the live Infomaniak CalDAV server.
+   …) and read-only mail operations (`list_mailboxes`, `search_emails`,
+   `get_email`, …) over MCP Streamable HTTP, backed by the live Infomaniak
+   CalDAV server and IMAP mailbox.
 
 ```
 ChatGPT
     |  HTTPS  +  OAuth 2.1 + PKCE
     v
 PHP MCP server  (/mcp)
-    |-----------------------------------|
-    v                                   v
-OAuth token files (data/)          Infomaniak CalDAV
-                                           |
-                                     Infomaniak Calendar
+    |-----------------------------------|-------------------|
+    v                                   v                   v
+OAuth token files (data/)          Infomaniak CalDAV   Infomaniak IMAP
+                                        |                   |
+                                 Infomaniak Calendar   Infomaniak Mail
 ```
 
-All calendar data is read **live** from Infomaniak on every call. Nothing is
-cached locally, so there are never stale events.
+All calendar and mail data is read **live** from Infomaniak on every call.
+Nothing is cached locally, so there are never stale events or messages. Mail is
+read-only: the tools never send, delete, move or mark messages as read.
 
 ---
 
@@ -38,8 +42,9 @@ cached locally, so there are never stale events.
 - Composer
 - HTTPS (required by the OAuth flow and by ChatGPT)
 - PHP extensions: `curl`, `mbstring`, `openssl`, `fileinfo`, `dom`, `xml`,
-  `xmlwriter` (all standard on common PHP hosts)
-- An Infomaniak account with an **application password**
+  `xmlwriter`, `iconv`, `zip` (all standard on common PHP hosts)
+- An Infomaniak account with an **application password** (calendar) and,
+  optionally, a **mail/device password** (email)
 
 ---
 
@@ -69,6 +74,10 @@ chmod 700 data
 | `INFOMANIAK_CALDAV_URL` | CalDAV endpoint. Defaults to `https://sync.infomaniak.com/`. |
 | `INFOMANIAK_USERNAME` | Your Infomaniak login (usually your email). |
 | `INFOMANIAK_APP_PASSWORD` | An Infomaniak **application password** (app-specific password for sync apps). |
+| `INFOMANIAK_MAIL_HOST` | IMAP host. Defaults to `mail.infomaniak.com`. |
+| `INFOMANIAK_MAIL_PORT` | IMAP port. Defaults to `993` (implicit SSL). |
+| `INFOMANIAK_MAIL_ADDRESS` | The full email address (IMAP username). Leave empty to disable the mail tools. |
+| `INFOMANIAK_MAIL_PASSWORD` | The **device/mail password** for that address (not the calendar application password). |
 | `OAUTH_USERNAME` | The single local user name shown on the login page. |
 | `OAUTH_PASSWORD_HASH` | A bcrypt hash of the login password (see below). |
 | `OAUTH_ACCESS_TOKEN_LIFETIME` | Access token lifetime in seconds (default 3600). |
@@ -91,6 +100,21 @@ In your Infomaniak account: **Account settings → Application passwords**
 application password is the credential the PHP server uses to talk to CalDAV.
 It is stored only in `.env` and is never exposed to ChatGPT, logged, or
 returned in any MCP response.
+
+### Generate an Infomaniak mail (device) password
+
+Mail access uses **IMAP**, and Infomaniak requires a **separate device/mail
+password** for it — the calendar application password does **not** work for
+email. In the Infomaniak Manager: **Mail Service → the address → Devices → Add
+a device**, then copy the generated password into `INFOMANIAK_MAIL_PASSWORD`.
+Set `INFOMANIAK_MAIL_ADDRESS` to the full email address. If you leave
+`INFOMANIAK_MAIL_ADDRESS` empty, the mail tools are disabled and only the
+calendar tools are registered.
+
+Infomaniak has no REST API for mailbox contents; IMAP is the only supported
+programmatic interface. IMAP settings are `mail.infomaniak.com`, port `993`
+(implicit SSL). Reading mail through these tools uses IMAP `PEEK`, so messages
+are **never** marked as read.
 
 ---
 
@@ -162,6 +186,9 @@ curl https://calendar.example.com/health
 
 curl https://calendar.example.com/health/caldav
 # {"status":"ok"}   (after configuring Infomaniak credentials)
+
+curl https://calendar.example.com/health/mail
+# {"status":"ok"}   (after configuring the mailbox; {"status":"not_configured"} if mail is disabled)
 ```
 
 ---
@@ -190,7 +217,8 @@ verify the PHP version and extensions in the hosting panel.
 In the hosting panel, set the PHP version to **8.3 or 8.4** and enable these
 extensions (they are standard, but `fileinfo` is sometimes off by default):
 
-`curl`, `mbstring`, `openssl`, `fileinfo`, `dom`, `xml`, `xmlwriter`.
+`curl`, `mbstring`, `openssl`, `fileinfo`, `dom`, `xml`, `xmlwriter`, `iconv`,
+`zip`.
 
 ### 3. Build the vendor directory
 
@@ -321,6 +349,8 @@ Supported endpoints:
 | POST | `/token` | Token endpoint (code + refresh_token) |
 | POST | `/mcp` | MCP Streamable HTTP endpoint |
 | GET | `/health` | Health check |
+| GET | `/health/caldav` | Calendar connectivity check |
+| GET | `/health/mail` | Mailbox connectivity check (`not_configured` when mail is disabled) |
 
 ---
 
@@ -393,6 +423,19 @@ The application validates all of these against registered/expected values.
 | `update_event` | write | Update event fields; only provided fields change, others are preserved. |
 | `delete_event` | write | Permanently delete an event (destructive, cannot be undone). |
 
+Mail tools (read-only; registered only when `INFOMANIAK_MAIL_ADDRESS` is set):
+
+| Tool | Read/Write | Description |
+| --- | --- | --- |
+| `list_mailboxes` | read | List mailboxes (folders) with their `name` and `path`. Use this first to obtain a mailbox path. |
+| `list_emails` | read | Most recent messages in a mailbox (`mailbox`, optional `start`/`end`, `limit`, `unread_only`). Returns headers, newest first. |
+| `search_emails` | read | Search by text (sender/recipients/subject/body), and optionally by `from`, `subject`, date range and mailbox. Returns headers. |
+| `get_email` | read | Fetch one message by `uid`, including a truncated plain-text body and attachment names. |
+
+Mail reads never mark messages as read (IMAP `PEEK`), never download attachment
+content, and never send, move or delete messages. Summaries are produced by the
+model from the returned message bodies.
+
 All dates/times are ISO 8601. Time zone information from the iCalendar data is
 preserved (the server never silently converts to the server's local time
 zone).
@@ -404,6 +447,9 @@ zone).
 - **OAuth:** PKCE (S256 only), exact redirect-URI validation, `state`
   passthrough, short-lived access tokens, refresh-token rotation, RFC 8707
   `resource` (audience) binding, RFC 9207 `iss` in authorization responses.
+  The server advertises the `calendar` and `mail` scopes and the consent screen
+  lists what is being granted. Because this is a single-user server, scopes are
+  used for explicit consent rather than per-tool enforcement.
 - **Tokens:** 256-bit cryptographically random opaque tokens, stored hashed.
 - **Authentication:** password stored only as a bcrypt hash; login attempts are
   rate-limited using filesystem state; the session cookie is HMAC-signed and
@@ -414,7 +460,12 @@ zone).
 - **Filesystem:** `data/` outside the web root; restrictive permissions;
   storage keys are validated (no path traversal); atomic writes.
 - **Logging:** operational logs never include the Infomaniak password, OAuth
-  tokens, authorization codes, or calendar contents.
+  tokens, authorization codes, calendar contents, or email contents.
+- **Mail:** read-only by default and by design. Message fetches use IMAP `PEEK`
+  (messages are never marked as read), attachment content is never downloaded,
+  bodies are truncated, and results are bounded by a server-side limit. The
+  mailbox password is used only server-side and never appears in MCP responses
+  or logs.
 - **No credential leakage:** Infomaniak credentials are used only server-side
   and never appear in MCP tool responses, errors, or browser responses.
 
@@ -428,10 +479,12 @@ vendor/bin/phpunit        # or: composer test
 ```
 
 The suite covers the OAuth server (discovery, DCR, PKCE, code exchange,
-refresh rotation, invalid/expired tokens), filesystem storage (atomic writes,
-expiry, cleanup), and calendar logic (event parsing, creation, update with
+refresh rotation, invalid/expired tokens, scopes), filesystem storage (atomic
+writes, expiry, cleanup), calendar logic (event parsing, creation, update with
 ETag-conflict handling, deletion, free-slot calculation) using a mocked CalDAV
-client — no live Infomaniak account is required.
+client, and mail logic (mailbox listing, search criteria/date handling, body
+extraction and truncation) using a mocked IMAP client — no live Infomaniak
+account is required.
 
 ---
 
@@ -461,6 +514,7 @@ infomaniak-mcp/
 ├── src/
 │   ├── Auth/              # login session (signed cookie) + rate limiter
 │   ├── Calendar/          # CalDavClient, CalendarService, iCalendar codec
+│   ├── Mail/              # IMAP client + MailService (read-only mail)
 │   ├── Http/              # response helpers, OAuth controller, HTML templates
 │   ├── Mcp/               # MCP server + tool definitions
 │   ├── OAuth/             # authorization server, client/token stores, validator

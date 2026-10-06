@@ -163,6 +163,33 @@ final class OAuthControllerTest extends TestCase
         self::assertStringContainsString('<form', (string) $response->getBody());
     }
 
+    public function testConsentDescribesMailScope(): void
+    {
+        [$controller, $tokens, , , $sessions] = $this->makeController();
+
+        $id = $tokens->saveAuthRequest([
+            'client_id' => 'c',
+            'redirect_uri' => 'https://chatgpt.com/callback',
+            'scope' => 'calendar mail',
+            'state' => '',
+            'code_challenge' => 'challenge',
+            'resource' => 'https://calendar.example.com/mcp',
+            'client_name' => 'ChatGPT',
+        ]);
+
+        $cookie = $sessions->issue('jan');
+
+        $request = (new Psr17Factory())->createServerRequest('GET', 'https://calendar.example.com/consent')
+            ->withQueryParams(['id' => $id])
+            ->withCookieParams([LoginSession::COOKIE => $cookie]);
+
+        $response = $controller->consent($request);
+        $body = (string) $response->getBody();
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertStringContainsString('calendar and email', $body);
+    }
+
     /**
      * @param array<string, mixed> $body
      */

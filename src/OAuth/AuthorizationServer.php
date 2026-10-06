@@ -16,7 +16,14 @@ use App\Config;
  */
 final class AuthorizationServer
 {
-    public const SCOPE = 'calendar';
+    public const CALENDAR_SCOPE = 'calendar';
+    public const MAIL_SCOPE = 'mail';
+
+    /** @deprecated Use CALENDAR_SCOPE. Kept for backward compatibility. */
+    public const SCOPE = self::CALENDAR_SCOPE;
+
+    /** @var list<string> */
+    public const SCOPES = [self::CALENDAR_SCOPE, self::MAIL_SCOPE];
 
     public function __construct(
         private readonly Config $config,
@@ -43,7 +50,7 @@ final class AuthorizationServer
             'grant_types_supported' => ['authorization_code', 'refresh_token'],
             'code_challenge_methods_supported' => ['S256'],
             'token_endpoint_auth_methods_supported' => ['none'],
-            'scopes_supported' => [self::SCOPE],
+            'scopes_supported' => self::SCOPES,
             'authorization_response_iss_parameter_supported' => true,
             'service_documentation' => $base,
         ];
@@ -302,7 +309,7 @@ final class AuthorizationServer
     private function isValidScope(string $scope): bool
     {
         foreach (explode(' ', $scope) as $s) {
-            if ('' !== $s && self::SCOPE !== $s) {
+            if ('' !== $s && !\in_array($s, self::SCOPES, true)) {
                 return false;
             }
         }

@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Deployment preflight check for the Infomaniak Calendar MCP server.
+ * Deployment preflight check for the Infomaniak Calendar & Mail MCP server.
  *
  * Run it from anywhere in the project (locally, or over SSH on the host):
  *
@@ -20,12 +20,14 @@ $requiredExtensions = [
     'curl' => 'CalDAV HTTP client',
     'mbstring' => 'iCalendar / UTF-8 handling',
     'openssl' => 'TLS and secure random values',
-    'fileinfo' => 'required by the MCP SDK',
+    'fileinfo' => 'required by the MCP SDK and IMAP',
     'dom' => 'CalDAV XML parsing',
     'xml' => 'XML',
     'xmlwriter' => 'XML',
     'json' => 'JSON',
     'ctype' => 'string handling',
+    'iconv' => 'required by the IMAP library',
+    'zip' => 'required by the IMAP library',
 ];
 
 $root = dirname(__DIR__);
@@ -40,7 +42,7 @@ $check = function (bool $ok, string $label, string $detail = '') use (&$lines, &
     }
 };
 
-echo "Infomaniak Calendar MCP — deployment check\n";
+echo "Infomaniak Calendar & Mail MCP — deployment check\n";
 echo 'Project root: '.$root."\n";
 echo 'PHP: '.php_sapi_name().' '.PHP_VERSION."\n\n";
 

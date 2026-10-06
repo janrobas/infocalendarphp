@@ -47,6 +47,45 @@ final class OAuthTest extends TestCase
         self::assertContains('S256', $d['code_challenge_methods_supported']);
         self::assertContains('authorization_code', $d['grant_types_supported']);
         self::assertTrue($d['authorization_response_iss_parameter_supported']);
+        self::assertContains('calendar', $d['scopes_supported']);
+        self::assertContains('mail', $d['scopes_supported']);
+    }
+
+    public function testAuthorizeAcceptsCombinedCalendarAndMailScope(): void
+    {
+        [$server] = $this->makeServer();
+
+        $client = $server->registerClient(['redirect_uris' => [self::REDIRECT]]);
+
+        $auth = $server->validateAuthorizeRequest([
+            'response_type' => 'code',
+            'client_id' => $client['client_id'],
+            'redirect_uri' => self::REDIRECT,
+            'code_challenge' => self::challenge('x'),
+            'code_challenge_method' => 'S256',
+            'resource' => 'https://calendar.example.com/mcp',
+            'scope' => 'calendar mail',
+        ]);
+
+        self::assertSame('calendar mail', $auth['scope']);
+    }
+
+    public function testAuthorizeRejectsUnknownScope(): void
+    {
+        [$server] = $this->makeServer();
+
+        $client = $server->registerClient(['redirect_uris' => [self::REDIRECT]]);
+
+        $this->expectException(OAuthException::class);
+        $server->validateAuthorizeRequest([
+            'response_type' => 'code',
+            'client_id' => $client['client_id'],
+            'redirect_uri' => self::REDIRECT,
+            'code_challenge' => self::challenge('x'),
+            'code_challenge_method' => 'S256',
+            'resource' => 'https://calendar.example.com/mcp',
+            'scope' => 'admin',
+        ]);
     }
 
     public function testRegisterClientReturnsClientId(): void

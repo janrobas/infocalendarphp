@@ -9,6 +9,8 @@ use App\Calendar\CalendarService;
 use App\Config;
 use App\Http\OAuthController;
 use App\Http\Response;
+use App\Mail\MailClient;
+use App\Mail\MailService;
 use App\Mcp\McpServer;
 use App\OAuth\AuthorizationServer;
 use App\OAuth\ClientStore;
@@ -97,7 +99,7 @@ function app_secrets(string $envFile): array
         }
     }
 
-    foreach (['INFOMANIAK_APP_PASSWORD', 'OAUTH_PASSWORD_HASH'] as $name) {
+    foreach (['INFOMANIAK_APP_PASSWORD', 'INFOMANIAK_MAIL_PASSWORD', 'OAUTH_PASSWORD_HASH'] as $name) {
         $value = getenv($name);
         if (\is_string($value) && '' !== $value) {
             $secrets[] = $value;
@@ -195,17 +197,33 @@ try {
         $config->get('INFOMANIAK_APP_PASSWORD', '') ?? '',
     ));
 
+    // Mail is optional: when no mailbox address is configured, the mail tools
+    // are simply not registered.
+    $mailFactory = static function () use ($config): ?MailService {
+        $address = $config->get('INFOMANIAK_MAIL_ADDRESS', '') ?? '';
+        if ('' === $address) {
+            return null;
+        }
+
+        return new MailService(MailClient::create(
+            $config->get('INFOMANIAK_MAIL_HOST', 'mail.infomaniak.com') ?? 'mail.infomaniak.com',
+            $config->int('INFOMANIAK_MAIL_PORT', 993),
+            $address,
+            $config->get('INFOMANIAK_MAIL_PASSWORD', '') ?? '',
+        ));
+    };
+
     $tokenValidator = new TokenValidator($tokens, $authServer);
     $metadata = new ProtectedResourceMetadata(
         authorizationServers: [$config->appUrl()],
-        scopesSupported: [AuthorizationServer::SCOPE],
+        scopesSupported: [AuthorizationServer::CALENDAR_SCOPE, AuthorizationServer::MAIL_SCOPE],
         resource: $config->mcpUrl(),
-        resourceName: 'Infomaniak Calendar',
+        resourceName: 'Infomaniak Calendar & Mail',
     );
 
-    $mcpFactory = static fn (): \Mcp\Server => McpServer::build($calendarFactory(), $dataDir.'/sessions', $logger);
+    $mcpFactory = static fn (): \Mcp\Server => McpServer::build($calendarFactory(), $mailFactory(), $dataDir.'/sessions', $logger);
 
-    $response = route($request, $config, $oauth, $authServer, $metadata, $calendarFactory, $tokenValidator, $mcpFactory, $logger);
+    $response = route($request, $config, $oauth, $authServer, $metadata, $calendarFactory, $mailFactory, $tokenValidator, $mcpFactory, $logger);
 
     Response::emit($response);
 } catch (\Throwable $e) {
@@ -226,6 +244,7 @@ try {
 
 /**
  * @param \Closure(): CalendarService $calendarFactory
+ * @param \Closure(): ?MailService     $mailFactory
  * @param \Closure(): \Mcp\Server      $mcpFactory
  *
  * @return ResponseInterface
@@ -237,6 +256,7 @@ function route(
     AuthorizationServer $authServer,
     ProtectedResourceMetadata $metadata,
     \Closure $calendarFactory,
+    \Closure $mailFactory,
     TokenValidator $tokenValidator,
     \Closure $mcpFactory,
     FileLogger $logger,
@@ -265,6 +285,23 @@ function route(
             return Response::json($data, 503);
         } catch (Throwable) {
             return Response::json(['status' => 'unavailable', 'error' => 'Calendar server unavailable.'], 503);
+        }
+    }
+
+    if ('GET' === $method && '/health/mail' === $path) {
+        $mail = $mailFactory();
+        if (null === $mail) {
+            return Response::json(['status' => 'not_configured'], 200);
+        }
+
+        try {
+            $mail->check();
+
+            return Response::json(['status' => 'ok']);
+        } catch (\App\Mail\MailException $e) {
+            return Response::json(['status' => 'unavailable', 'error' => $e->getMessage()], 503);
+        } catch (Throwable) {
+            return Response::json(['status' => 'unavailable', 'error' => 'Mail server unavailable.'], 503);
         }
     }
 

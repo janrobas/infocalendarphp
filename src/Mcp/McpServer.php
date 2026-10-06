@@ -7,6 +7,8 @@ namespace App\Mcp;
 use App\Calendar\CalDavException;
 use App\Calendar\CalendarException;
 use App\Calendar\CalendarService;
+use App\Mail\MailException;
+use App\Mail\MailService;
 use Mcp\Exception\ToolCallException;
 use Mcp\Schema\ToolAnnotations;
 use Mcp\Server;
@@ -15,21 +17,22 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 
 /**
- * Builds the MCP server and registers the calendar tools.
+ * Builds the MCP server and registers the calendar tools, plus the read-only
+ * mail tools when a mailbox is configured.
  */
 final class McpServer
 {
-    public static function build(CalendarService $calendar, string $sessionDir, ?LoggerInterface $logger = null): Server
+    public static function build(CalendarService $calendar, ?MailService $mail, string $sessionDir, ?LoggerInterface $logger = null): Server
     {
-        return Server::builder()
+        $builder = Server::builder()
             ->setLogger($logger ?? new NullLogger())
             ->setServerInfo(
-                name: 'infomaniak-calendar',
-                version: '1.0.0',
-                title: 'Infomaniak Calendar',
-                description: 'Access the user\'s Infomaniak calendars: list calendars, read, search, create, update and delete events, and find free time slots.',
+                name: 'infomaniak',
+                version: '1.1.0',
+                title: 'Infomaniak Calendar & Mail',
+                description: 'Access the user\'s Infomaniak calendars and mailbox: list calendars, read, search, create, update and delete events, find free time slots, and read/search email.',
             )
-            ->setInstructions('The user\'s Infomaniak calendar. Use list_calendars first to obtain a calendar_id, then use the other tools. Dates and times are ISO 8601 strings. Read-only tools: list_calendars, get_events, search_events, find_free_slots. Mutating tools: create_event, update_event, delete_event.')
+            ->setInstructions('The user\'s Infomaniak calendar and mailbox. Use list_calendars first to obtain a calendar_id, then use the other calendar tools. Use list_mailboxes first to obtain a mailbox path, then use the mail tools. Dates and times are ISO 8601 strings. Read-only tools never change anything. Calendar read-only tools: list_calendars, get_events, search_events, find_free_slots. Calendar mutating tools: create_event, update_event, delete_event. Mail tools are read-only: list_mailboxes, list_emails, search_emails, get_email.')
             ->setSession(new FileSessionStore($sessionDir))
             ->addTool(
                 handler: static fn (): array => self::guard(static fn (): array => $calendar->listCalendars()),
@@ -167,8 +170,89 @@ final class McpServer
                     ],
                     'required' => ['calendar_id', 'event_id'],
                 ],
+            );
+
+        if (null !== $mail) {
+            self::registerMailTools($builder, $mail);
+        }
+
+        return $builder->build();
+    }
+
+    /**
+     * Register the read-only mail tools. Kept separate so they are only added
+     * when the mailbox is configured.
+     */
+    private static function registerMailTools(\Mcp\Server\Builder $builder, MailService $mail): void
+    {
+        $builder
+            ->addTool(
+                handler: static fn (): array => self::guardMail(static fn (): array => $mail->listMailboxes()),
+                name: 'list_mailboxes',
+                description: 'List all mailboxes (folders) in the connected Infomaniak mailbox. Returns each mailbox\'s name and path. Use this first to obtain the mailbox path required by the other mail tools. This tool only reads data.',
+                annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
+                inputSchema: [
+                    'type' => 'object',
+                    'properties' => [],
+                ],
             )
-            ->build();
+            ->addTool(
+                handler: static fn (?string $mailbox = null, ?string $start = null, ?string $end = null, ?int $limit = null, bool $unread_only = false): array => self::guardMail(
+                    static fn (): array => $mail->listEmails($mailbox, $start, $end, $limit, $unread_only),
+                ),
+                name: 'list_emails',
+                description: 'List the most recent emails in a mailbox, newest first. Returns message headers (uid, subject, from, to, date, seen, flagged, has_attachments), not bodies. Use get_email with a uid to read a message. This tool only reads data and never marks messages as read.',
+                annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
+                inputSchema: [
+                    'type' => 'object',
+                    'properties' => [
+                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path, as returned by list_mailboxes. Defaults to INBOX.'],
+                        'start' => ['type' => 'string', 'description' => 'Optional start of the date range (ISO 8601). Messages on or after this date.'],
+                        'end' => ['type' => 'string', 'description' => 'Optional end of the date range (ISO 8601, exclusive). Messages strictly before this date.'],
+                        'limit' => ['type' => 'integer', 'description' => 'Optional maximum number of messages to return (capped server-side).'],
+                        'unread_only' => ['type' => 'boolean', 'description' => 'When true, return only unread messages. Defaults to false.'],
+                    ],
+                ],
+            )
+            ->addTool(
+                handler: static fn (string $query, ?string $mailbox = null, ?string $start = null, ?string $end = null, ?string $from = null, ?string $subject = null, ?int $limit = null, bool $unread_only = false): array => self::guardMail(
+                    static fn (): array => $mail->searchEmails($query, $mailbox, $start, $end, $from, $subject, $limit, $unread_only),
+                ),
+                name: 'search_emails',
+                description: 'Search emails by text (matches sender, recipients, subject and body), or by from/subject, optionally within a date range and mailbox. Returns message headers, not bodies. Use get_email with a uid to read a message. This tool only reads data.',
+                annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
+                inputSchema: [
+                    'type' => 'object',
+                    'properties' => [
+                        'query' => ['type' => 'string', 'description' => 'The text to search for across the message. May be empty when from and/or subject are provided.'],
+                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path. Defaults to INBOX.'],
+                        'start' => ['type' => 'string', 'description' => 'Optional start of the date range (ISO 8601).'],
+                        'end' => ['type' => 'string', 'description' => 'Optional end of the date range (ISO 8601, exclusive).'],
+                        'from' => ['type' => 'string', 'description' => 'Optional sender to match.'],
+                        'subject' => ['type' => 'string', 'description' => 'Optional subject substring to match.'],
+                        'limit' => ['type' => 'integer', 'description' => 'Optional maximum number of messages to return (capped server-side).'],
+                        'unread_only' => ['type' => 'boolean', 'description' => 'When true, return only unread messages. Defaults to false.'],
+                    ],
+                    'required' => ['query'],
+                ],
+            )
+            ->addTool(
+                handler: static fn (string $uid, ?string $mailbox = null, ?int $max_chars = null): array => self::guardMail(
+                    static fn (): array => $mail->getEmail($uid, $mailbox, $max_chars),
+                ),
+                name: 'get_email',
+                description: 'Retrieve a single email by its uid, including a plain-text version of the body (truncated) and the list of attachment names. Provide the uid from list_emails or search_emails. This tool only reads data and never marks the message as read.',
+                annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
+                inputSchema: [
+                    'type' => 'object',
+                    'properties' => [
+                        'uid' => ['type' => 'string', 'description' => 'The message uid, as returned by list_emails or search_emails.'],
+                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path. Defaults to INBOX.'],
+                        'max_chars' => ['type' => 'integer', 'description' => 'Optional maximum number of body characters to return.'],
+                    ],
+                    'required' => ['uid'],
+                ],
+            );
     }
 
     /**
@@ -182,6 +266,21 @@ final class McpServer
         try {
             return $fn();
         } catch (CalendarException|CalDavException $e) {
+            throw new ToolCallException($e->getMessage());
+        }
+    }
+
+    /**
+     * Convert mail domain exceptions into MCP tool errors whose message is safe
+     * to return to the client.
+     *
+     * @return array<string, mixed>
+     */
+    private static function guardMail(callable $fn): array
+    {
+        try {
+            return $fn();
+        } catch (MailException $e) {
             throw new ToolCallException($e->getMessage());
         }
     }

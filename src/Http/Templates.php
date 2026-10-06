@@ -18,7 +18,7 @@ final class Templates
 
         return self::layout('Sign in', <<<HTML
             <h1>Sign in</h1>
-            <p class="muted">Sign in to authorize calendar access.</p>
+            <p class="muted">Sign in to authorize access.</p>
             {$errorHtml}
             <form method="post" action="/login">
                 <input type="hidden" name="id" value="{$id}">
@@ -36,12 +36,13 @@ final class Templates
         $id = self::e($authRequestId);
         $name = self::e($clientName);
         $scopes = self::e($scope);
+        $access = self::e(self::describeScopes($scope));
 
         return self::layout('Authorize access', <<<HTML
             <h1>Authorize access</h1>
             <p class="muted">
                 <strong>{$name}</strong> is requesting access to your
-                <strong>Infomaniak Calendar</strong>.
+                Infomaniak <strong>{$access}</strong>.
             </p>
             <p class="muted">Requested access: <code>{$scopes}</code></p>
             <form method="post" action="/consent" class="actions">
@@ -55,6 +56,34 @@ final class Templates
                 <button type="submit" class="secondary">Cancel</button>
             </form>
             HTML);
+    }
+
+    /**
+     * Turn a space-separated scope string into a human-readable description
+     * ("calendar mail" -> "calendar and email").
+     */
+    private static function describeScopes(string $scope): string
+    {
+        $labels = [
+            'calendar' => 'calendar',
+            'mail' => 'email',
+        ];
+
+        $parts = [];
+        foreach (explode(' ', $scope) as $s) {
+            if ('' === $s) {
+                continue;
+            }
+            $parts[] = $labels[$s] ?? $s;
+        }
+
+        if ([] === $parts) {
+            return 'account';
+        }
+
+        $last = array_pop($parts);
+
+        return [] === $parts ? $last : implode(', ', $parts).' and '.$last;
     }
 
     public static function error(string $message): string

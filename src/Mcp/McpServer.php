@@ -30,7 +30,7 @@ final class McpServer
                 name: 'infomaniak',
                 version: '1.1.0',
                 title: 'Infomaniak Calendar & Mail',
-                description: 'Access the user\'s Infomaniak calendars and mailbox: list calendars, read, search, create, update and delete events, find free time slots, and read/search email.',
+                description: 'Access the user\'s Infomaniak calendars and mailbox: list calendars, read, search, create, update and delete events, find free time slots, and read/search email (mail is read-only).',
             )
             ->setInstructions('The user\'s Infomaniak calendar and mailbox. Use list_calendars first to obtain a calendar_id, then use the other calendar tools. Use list_mailboxes first to obtain a mailbox path, then use the mail tools. Dates and times are ISO 8601 strings. Read-only tools never change anything. Calendar read-only tools: list_calendars, get_events, search_events, find_free_slots. Calendar mutating tools: create_event, update_event, delete_event. Mail tools are read-only: list_mailboxes, list_emails, search_emails, get_email.')
             ->setSession(new FileSessionStore($sessionDir))

@@ -12,7 +12,7 @@ use App\Storage\FileStore;
  */
 final class RateLimiter
 {
-    private const WINDOW = 900;  // 15 minutes
+    private const WINDOW = 180;  // 3 minutes
     private const MAX_ATTEMPTS = 5;
 
     public function __construct(private readonly FileStore $store)

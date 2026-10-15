@@ -23,6 +23,15 @@ final class MailService
     }
 
     /**
+     * Verify that the mailbox is reachable and the credentials work. Used by the
+     * /health/mail endpoint; throws {@see MailException} when it is not.
+     */
+    public function check(): void
+    {
+        $this->client->check();
+    }
+
+    /**
      * @return array{mailboxes: list<array<string, mixed>>}
      */
     public function listMailboxes(): array

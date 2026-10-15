@@ -151,6 +151,25 @@ final class MailTest extends TestCase
         self::assertStringEndsWith('…', $result['email']['body']);
     }
 
+    public function testCheckDelegatesToTheClient(): void
+    {
+        $client = new FakeMailClient();
+        $service = new MailService($client);
+
+        $service->check();
+
+        self::assertSame(1, $client->checkCount);
+    }
+
+    public function testCheckPropagatesConnectionFailure(): void
+    {
+        $service = new MailService(new FakeMailClient(checkError: new MailException('Mail server unavailable.')));
+
+        $this->expectException(MailException::class);
+        $this->expectExceptionMessage('Mail server unavailable.');
+        $service->check();
+    }
+
     public function testMailboxPathFromListMailboxesIsAcceptedByListEmails(): void
     {
         $client = new FakeMailClient([
@@ -227,6 +246,8 @@ final class FakeMailClient extends MailClient
     /** @var array<string, mixed> */
     public array $lastMessage = [];
 
+    public int $checkCount = 0;
+
     /**
      * @param list<array<string, mixed>>      $folders
      * @param list<array<string, mixed>>      $searchResults
@@ -236,8 +257,18 @@ final class FakeMailClient extends MailClient
         private readonly array $folders = [],
         private readonly array $searchResults = [],
         private readonly ?array $message = null,
+        private readonly ?MailException $checkError = null,
     ) {
         parent::__construct([]);
+    }
+
+    public function check(): void
+    {
+        ++$this->checkCount;
+
+        if (null !== $this->checkError) {
+            throw $this->checkError;
+        }
     }
 
     public function listFolders(): array

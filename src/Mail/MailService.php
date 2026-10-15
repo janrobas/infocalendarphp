@@ -155,11 +155,17 @@ final class MailService
         return ['messages' => $messages, 'count' => \count($messages), 'mailbox' => $path];
     }
 
+    /**
+     * Normalize a mailbox argument into the readable UTF-8 name the IMAP client
+     * expects. Accepts both the readable name (`ŠCKR TODO`) and the wire form
+     * used by IMAP itself (`&AWA-CKR TODO`), so a `path` taken straight from
+     * list_mailboxes works as-is.
+     */
     private function mailbox(?string $mailbox): string
     {
         $mailbox = null !== $mailbox ? trim($mailbox) : '';
 
-        return '' === $mailbox ? self::DEFAULT_MAILBOX : $mailbox;
+        return '' === $mailbox ? self::DEFAULT_MAILBOX : ModifiedUtf7::decode($mailbox);
     }
 
     private function normalizeLimit(?int $limit): int

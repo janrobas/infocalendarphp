@@ -189,7 +189,7 @@ final class McpServer
             ->addTool(
                 handler: static fn (): array => self::guardMail(static fn (): array => $mail->listMailboxes()),
                 name: 'list_mailboxes',
-                description: 'List all mailboxes (folders) in the connected Infomaniak mailbox. Returns each mailbox\'s name and path. Use this first to obtain the mailbox path required by the other mail tools. This tool only reads data.',
+                description: 'List all mailboxes (folders) in the connected Infomaniak mailbox. Returns each mailbox\'s name and path. Use this first to obtain the mailbox required by the other mail tools: pass the returned path as the `mailbox` argument. This tool only reads data.',
                 annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
                 inputSchema: [
                     'type' => 'object',
@@ -206,7 +206,7 @@ final class McpServer
                 inputSchema: [
                     'type' => 'object',
                     'properties' => [
-                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path, as returned by list_mailboxes. Defaults to INBOX.'],
+                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path, as returned by list_mailboxes (the readable name is accepted too). Defaults to INBOX.'],
                         'start' => ['type' => 'string', 'description' => 'Optional start of the date range (ISO 8601). Messages on or after this date.'],
                         'end' => ['type' => 'string', 'description' => 'Optional end of the date range (ISO 8601, exclusive). Messages strictly before this date.'],
                         'limit' => ['type' => 'integer', 'description' => 'Optional maximum number of messages to return (capped server-side).'],
@@ -225,7 +225,7 @@ final class McpServer
                     'type' => 'object',
                     'properties' => [
                         'query' => ['type' => 'string', 'description' => 'The text to search for across the message. May be empty when from and/or subject are provided.'],
-                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path. Defaults to INBOX.'],
+                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path, as returned by list_mailboxes (the readable name is accepted too). Defaults to INBOX.'],
                         'start' => ['type' => 'string', 'description' => 'Optional start of the date range (ISO 8601).'],
                         'end' => ['type' => 'string', 'description' => 'Optional end of the date range (ISO 8601, exclusive).'],
                         'from' => ['type' => 'string', 'description' => 'Optional sender to match.'],
@@ -247,7 +247,7 @@ final class McpServer
                     'type' => 'object',
                     'properties' => [
                         'uid' => ['type' => 'string', 'description' => 'The message uid, as returned by list_emails or search_emails.'],
-                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path. Defaults to INBOX.'],
+                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path, as returned by list_mailboxes (the readable name is accepted too). Defaults to INBOX.'],
                         'max_chars' => ['type' => 'integer', 'description' => 'Optional maximum number of body characters to return.'],
                     ],
                     'required' => ['uid'],

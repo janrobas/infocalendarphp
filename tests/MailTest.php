@@ -151,6 +151,55 @@ final class MailTest extends TestCase
         self::assertStringEndsWith('…', $result['email']['body']);
     }
 
+    public function testMailboxPathFromListMailboxesIsAcceptedByListEmails(): void
+    {
+        $client = new FakeMailClient([
+            ['name' => 'ŠCKR TODO', 'path' => '&AWA-CKR TODO', 'delimiter' => '/', 'selectable' => true],
+        ]);
+
+        $service = new MailService($client);
+        $path = $service->listMailboxes()['mailboxes'][0]['path'];
+
+        self::assertSame('&AWA-CKR TODO', $path);
+
+        $result = $service->listEmails($path, null, null, null, false);
+
+        self::assertSame('ŠCKR TODO', $client->lastSearch['folder']);
+        self::assertSame('ŠCKR TODO', $result['mailbox']);
+    }
+
+    public function testMailboxAcceptsReadableNameAndWirePath(): void
+    {
+        $client = new FakeMailClient([], []);
+        $service = new MailService($client);
+
+        $service->listEmails('ŠCKR TODO', null, null, null, false);
+        self::assertSame('ŠCKR TODO', $client->lastSearch['folder']);
+
+        $service->searchEmails('x', '&AWA-CKR TODO', null, null, null, null, null, false);
+        self::assertSame('ŠCKR TODO', $client->lastSearch['folder']);
+    }
+
+    public function testMailboxDecodesEveryPathSegment(): void
+    {
+        $client = new FakeMailClient([], []);
+        $service = new MailService($client);
+
+        $service->listEmails('INBOX/&AWA-CKR TODO/&-', null, null, null, false);
+
+        self::assertSame('INBOX/ŠCKR TODO/&', $client->lastSearch['folder']);
+    }
+
+    public function testGetEmailDecodesMailboxPath(): void
+    {
+        $client = new FakeMailClient([], [], ['uid' => 3, 'subject' => 'S', 'text' => 'body']);
+        $service = new MailService($client);
+
+        $service->getEmail('3', '&AWA-CKR TODO', null);
+
+        self::assertSame('ŠCKR TODO', $client->lastMessage['folder']);
+    }
+
     public function testGetEmailRejectsInvalidUid(): void
     {
         $service = new MailService(new FakeMailClient());
@@ -174,6 +223,9 @@ final class FakeMailClient extends MailClient
 {
     /** @var array<string, mixed> */
     public array $lastSearch = [];
+
+    /** @var array<string, mixed> */
+    public array $lastMessage = [];
 
     /**
      * @param list<array<string, mixed>>      $folders
@@ -202,6 +254,8 @@ final class FakeMailClient extends MailClient
 
     public function getMessage(string $folderPath, int $uid): ?array
     {
+        $this->lastMessage = ['folder' => $folderPath, 'uid' => $uid];
+
         return $this->message;
     }
 }

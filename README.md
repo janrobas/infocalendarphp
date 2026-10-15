@@ -432,6 +432,12 @@ Mail tools (read-only; registered only when `INFOMANIAK_MAIL_ADDRESS` is set):
 | `search_emails` | read | Search by text (sender/recipients/subject/body), and optionally by `from`, `subject`, date range and mailbox. Returns headers. |
 | `get_email` | read | Fetch one message by `uid`, including a truncated plain-text body and attachment names. |
 
+The `mailbox` argument of `list_emails`, `search_emails` and `get_email` takes
+the `path` (or the `name`) returned by `list_mailboxes`. Mailbox names that
+contain non-ASCII characters are transmitted by IMAP in modified UTF-7
+(RFC 3501, e.g. `ŠCKR TODO` ⇄ `&AWA-CKR TODO`); both the readable name and that
+wire form are accepted, so a `path` copied from `list_mailboxes` always works.
+
 Mail reads never mark messages as read (IMAP `PEEK`), never download attachment
 content, and never send, move or delete messages. Summaries are produced by the
 model from the returned message bodies.
@@ -482,9 +488,9 @@ The suite covers the OAuth server (discovery, DCR, PKCE, code exchange,
 refresh rotation, invalid/expired tokens, scopes), filesystem storage (atomic
 writes, expiry, cleanup), calendar logic (event parsing, creation, update with
 ETag-conflict handling, deletion, free-slot calculation) using a mocked CalDAV
-client, and mail logic (mailbox listing, search criteria/date handling, body
-extraction and truncation) using a mocked IMAP client — no live Infomaniak
-account is required.
+client, and mail logic (mailbox listing, modified UTF-7 mailbox names, search
+criteria/date handling, body extraction and truncation) using a mocked IMAP
+client — no live Infomaniak account is required.
 
 ---
 

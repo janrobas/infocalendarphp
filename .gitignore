@@ -7,3 +7,5 @@
 /.phpunit.cache/
 composer.lock
 *.log
+/.playwright-mcp/
+session-*.md

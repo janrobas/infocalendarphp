@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace App\Tests;
 
 use App\Auth\LoginSession;
-use App\Auth\RateLimiter;
 use App\Config;
 use App\Http\OAuthController;
 use App\OAuth\AuthorizationServer;
 use App\OAuth\ClientStore;
 use App\OAuth\TokenStore;
 use App\Storage\FileStore;
+use App\Storage\RateLimiter;
 use Http\Discovery\Psr17Factory;
 use Psr\Http\Message\ServerRequestInterface;
 

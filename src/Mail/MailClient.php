@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Mail;
 
+use Webklex\PHPIMAP\Attachment;
 use Webklex\PHPIMAP\Attribute;
 use Webklex\PHPIMAP\Client;
 use Webklex\PHPIMAP\Config;
@@ -20,11 +21,14 @@ use Webklex\PHPIMAP\Message;
 /**
  * Thin IMAP client built on webklex/php-imap, speaking IMAP directly (no
  * ext-imap). Opens a single connection lazily, lists mailboxes, searches and
- * fetches messages, and normalizes the library objects into plain arrays so
- * the rest of the app (and its tests) never touch the vendor API.
+ * fetches messages, reads attachments on demand and appends messages, and
+ * normalizes the library objects into plain arrays so the rest of the app (and
+ * its tests) never touch the vendor API.
  *
- * All fetches use IMAP FT_PEEK, so reading a message through the MCP tools
- * never marks it as \Seen on the server.
+ * All reads use IMAP FT_PEEK, so reading a message through the MCP tools never
+ * marks it as \Seen on the server. Attachment bodies are only decoded when
+ * {@see self::getAttachmentContent()} is called; listing a message reports
+ * metadata only.
  */
 class MailClient
 {
@@ -152,23 +156,90 @@ class MailClient
      */
     public function getMessage(string $folderPath, int $uid): ?array
     {
-        try {
-            $message = $this->folder($folderPath)->query()
-                ->setFetchBody(true)
-                ->setFetchOrderAsc()
-                ->leaveUnread()
-                ->getMessageByUid($uid);
-        } catch (MessageNotFoundException|MessageHeaderFetchingException) {
+        $message = $this->fetchMessage($folderPath, $uid);
+
+        return null === $message ? null : $this->mapMessage($message, true);
+    }
+
+    /**
+     * Fetch a single attachment, including its decoded content.
+     *
+     * `$selector` matches the attachment name (as returned by getMessage) or its
+     * 1-based index in the same order. When it is omitted, the only PDF
+     * attachment is used, or the only attachment if the message has just one.
+     *
+     * This is the only place in the client that looks at attachment bodies, so
+     * they are only ever decoded when the caller explicitly asks for one.
+     *
+     * @return array{name: string, type: string, size: int, content: string}|null
+     */
+    public function getAttachmentContent(string $folderPath, int $uid, ?string $selector = null): ?array
+    {
+        $message = $this->fetchMessage($folderPath, $uid);
+        if (null === $message) {
             return null;
-        } catch (\Throwable $e) {
-            throw $this->translate($e);
         }
 
-        if (!$message instanceof Message) {
+        $attachments = [];
+        foreach ($message->getAttachments() as $attachment) {
+            if ($attachment instanceof Attachment) {
+                $attachments[] = $attachment;
+            }
+        }
+
+        $attachment = $this->selectAttachment($attachments, $selector);
+        if (null === $attachment) {
             return null;
         }
 
-        return $this->mapMessage($message, true);
+        return [
+            'name' => (string) $attachment->name,
+            'type' => self::mediaType((string) $attachment->content_type),
+            'size' => (int) $attachment->size,
+            'content' => (string) $attachment->content,
+        ];
+    }
+
+    /**
+     * Append a raw MIME message to a mailbox. Used to keep a copy of sent mail
+     * in the account's Sent folder, which SMTP alone does not do.
+     */
+    public function appendMessage(string $folderPath, string $rawMessage, array $flags = ['\\Seen']): void
+    {
+        $this->guard(function () use ($folderPath, $rawMessage, $flags): void {
+            $this->folder($folderPath)->appendMessage($rawMessage, $flags);
+        });
+    }
+
+    /**
+     * Resolve the mailbox that holds sent messages: the configured name when one
+     * is given, otherwise the first folder that looks like a Sent folder.
+     */
+    public function findSentFolder(?string $preferred = null): ?string
+    {
+        if (null !== $preferred && '' !== trim($preferred)) {
+            return trim($preferred);
+        }
+
+        $exact = [
+            'sent', 'sent items', 'sent messages', 'sent mail', 'sent-mail',
+            'envoyés', 'envoyes', 'gesendet', 'verzonden', 'posta inviata',
+        ];
+
+        $fallback = null;
+        foreach ($this->listFolders() as $folder) {
+            $name = mb_strtolower(trim($folder['name']));
+
+            if (\in_array($name, $exact, true)) {
+                return $folder['path'];
+            }
+
+            if (null === $fallback && str_contains($name, 'sent')) {
+                $fallback = $folder['path'];
+            }
+        }
+
+        return $fallback;
     }
 
     protected function connection(): Client
@@ -246,20 +317,92 @@ class MailClient
     }
 
     /**
-     * @return list<array{name: string, size: int, type: string}>
+     * Attachment metadata for a message. Body content is deliberately not read
+     * here; see {@see self::getAttachmentContent()}.
+     *
+     * @return list<array{index: int, name: string, size: int, type: string}>
      */
     private function attachments(Message $message): array
     {
         $result = [];
+        $index = 0;
+
         foreach ($message->getAttachments() as $attachment) {
+            ++$index;
             $result[] = [
+                'index' => $index,
                 'name' => (string) $attachment->name,
                 'size' => (int) $attachment->size,
-                'type' => (string) $attachment->content_type,
+                'type' => self::mediaType((string) $attachment->content_type),
             ];
         }
 
         return $result;
+    }
+
+    /**
+     * Fetch a message with its body, or null when it no longer exists.
+     */
+    private function fetchMessage(string $folderPath, int $uid): ?Message
+    {
+        try {
+            $message = $this->folder($folderPath)->query()
+                ->setFetchBody(true)
+                ->setFetchOrderAsc()
+                ->leaveUnread()
+                ->getMessageByUid($uid);
+        } catch (MessageNotFoundException|MessageHeaderFetchingException) {
+            return null;
+        } catch (\Throwable $e) {
+            throw $this->translate($e);
+        }
+
+        return $message instanceof Message ? $message : null;
+    }
+
+    /**
+     * @param list<Attachment> $attachments
+     */
+    private function selectAttachment(array $attachments, ?string $selector): ?Attachment
+    {
+        $selector = null !== $selector ? trim($selector) : '';
+
+        if ('' !== $selector) {
+            foreach ($attachments as $index => $attachment) {
+                if ($selector === (string) ($index + 1) || $selector === (string) $attachment->name) {
+                    return $attachment;
+                }
+            }
+
+            return null;
+        }
+
+        $pdfs = array_values(array_filter(
+            $attachments,
+            static fn (Attachment $attachment): bool => 'application/pdf' === self::mediaType((string) $attachment->content_type),
+        ));
+
+        if (1 === \count($pdfs)) {
+            return $pdfs[0];
+        }
+
+        if (1 === \count($attachments)) {
+            return $attachments[0];
+        }
+
+        if ([] === $attachments) {
+            return null;
+        }
+
+        throw new MailException('This email has several attachments; specify which one to read by name or index.');
+    }
+
+    /**
+     * Strip any parameters from a MIME type ("text/plain; charset=utf-8").
+     */
+    private static function mediaType(string $contentType): string
+    {
+        return strtolower(trim(explode(';', $contentType, 2)[0]));
     }
 
     private function attribute(mixed $value): string

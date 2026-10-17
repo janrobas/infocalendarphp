@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace App\Http;
 
 use App\Auth\LoginSession;
-use App\Auth\RateLimiter;
 use App\Config;
 use App\OAuth\AuthorizationServer;
 use App\OAuth\ClientStore;
 use App\OAuth\OAuthException;
 use App\OAuth\TokenStore;
+use App\Storage\RateLimiter;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use RuntimeException;
@@ -76,7 +76,7 @@ final class OAuthController
         $valid = hash_equals($expectedUser, $username) && password_verify($password, $hash);
 
         if (!$valid) {
-            $this->rateLimiter->recordFailure($ip);
+            $this->rateLimiter->record($ip);
 
             return Response::html(Templates::login($id, 'Invalid username or password.'));
         }

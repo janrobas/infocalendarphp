@@ -14,25 +14,30 @@ with two jobs:
 
 1. Authenticate ChatGPT using OAuth 2.1 (authorization code + PKCE).
 2. Expose calendar operations (`list_calendars`, `get_events`, `create_event`,
-   …) and read-only mail operations (`list_mailboxes`, `search_emails`,
-   `get_email`, …) over MCP Streamable HTTP, backed by the live Infomaniak
-   CalDAV server and IMAP mailbox.
+   …) and mail operations (`list_mailboxes`, `search_emails`, `get_email`,
+   `read_attachment`, and — when explicitly enabled — `send_email`) over MCP
+   Streamable HTTP, backed by the live Infomaniak CalDAV server, IMAP mailbox
+   and SMTP server.
 
 ```
 ChatGPT
     |  HTTPS  +  OAuth 2.1 + PKCE
     v
 PHP MCP server  (/mcp)
-    |-----------------------------------|-------------------|
-    v                                   v                   v
-OAuth token files (data/)          Infomaniak CalDAV   Infomaniak IMAP
-                                        |                   |
-                                 Infomaniak Calendar   Infomaniak Mail
+    |------------------|-------------------|-------------------|
+    v                  v                   v                   v
+OAuth token       Infomaniak CalDAV   Infomaniak IMAP     Infomaniak SMTP
+files (data/)     (calendar)          (read mail)         (send mail)
 ```
 
 All calendar and mail data is read **live** from Infomaniak on every call.
-Nothing is cached locally, so there are never stale events or messages. Mail is
-read-only: the tools never send, delete, move or mark messages as read.
+Nothing is cached locally, so there are never stale events or messages.
+
+Mail reading never sends, deletes, moves or marks messages as read. Reading and
+searching are always available; **sending is off by default** and only exists
+when `INFOMANIAK_MAIL_SEND_ENABLED=1`. PDF attachments are only decoded and
+parsed when a tool is explicitly asked to read one — listing a message never
+touches an attachment's contents.
 
 ---
 
@@ -42,7 +47,7 @@ read-only: the tools never send, delete, move or mark messages as read.
 - Composer
 - HTTPS (required by the OAuth flow and by ChatGPT)
 - PHP extensions: `curl`, `mbstring`, `openssl`, `fileinfo`, `dom`, `xml`,
-  `xmlwriter`, `iconv`, `zip` (all standard on common PHP hosts)
+  `xmlwriter`, `iconv`, `zip`, `zlib` (all standard on common PHP hosts)
 - An Infomaniak account with an **application password** (calendar) and,
   optionally, a **mail/device password** (email)
 
@@ -78,6 +83,15 @@ chmod 700 data
 | `INFOMANIAK_MAIL_PORT` | IMAP port. Defaults to `993` (implicit SSL). |
 | `INFOMANIAK_MAIL_ADDRESS` | The full email address (IMAP username). Leave empty to disable the mail tools. |
 | `INFOMANIAK_MAIL_PASSWORD` | The **device/mail password** for that address (not the calendar application password). |
+| `INFOMANIAK_MAIL_SEND_ENABLED` | `1` to enable sending email. Defaults to `0`, which means `send_email` is not registered at all. |
+| `INFOMANIAK_SMTP_HOST` | SMTP host. Defaults to `mail.infomaniak.com`. |
+| `INFOMANIAK_SMTP_PORT` | SMTP port. Defaults to `587` (STARTTLS). Use `465` with `INFOMANIAK_SMTP_ENCRYPTION=ssl`. |
+| `INFOMANIAK_SMTP_ENCRYPTION` | `starttls` (default) or `ssl` (implicit TLS). |
+| `INFOMANIAK_MAIL_SAVE_SENT` | `1` (default) to append a copy of sent messages to the Sent mailbox over IMAP, since SMTP alone does not record them. |
+| `INFOMANIAK_MAIL_SENT_MAILBOX` | Mailbox to save sent copies in. Empty means detect it by name (`Sent`, `Envoyés`, …). |
+| `INFOMANIAK_MAIL_MAX_RECIPIENTS` | Maximum recipients per message (default 10). |
+| `INFOMANIAK_MAIL_MAX_SENDS_PER_HOUR` | Send rate limit (default 30 per hour). |
+| `INFOMANIAK_MAIL_MAX_ATTACHMENT_BYTES` | Largest attachment, in bytes, that will be read from a PDF or attached to a message (default 10485760, i.e. 10 MB). |
 | `OAUTH_USERNAME` | The single local user name shown on the login page. |
 | `OAUTH_PASSWORD_HASH` | A bcrypt hash of the login password (see below). |
 | `OAUTH_ACCESS_TOKEN_LIFETIME` | Access token lifetime in seconds (default 3600). |
@@ -115,6 +129,28 @@ Infomaniak has no REST API for mailbox contents; IMAP is the only supported
 programmatic interface. IMAP settings are `mail.infomaniak.com`, port `993`
 (implicit SSL). Reading mail through these tools uses IMAP `PEEK`, so messages
 are **never** marked as read.
+
+### Sending email
+
+Sending uses the same address and password over SMTP and is **disabled until you
+opt in** with `INFOMANIAK_MAIL_SEND_ENABLED=1`. While it is off, the
+`send_email` tool does not exist, so nothing can send on your behalf.
+
+Infomaniak accepts `mail.infomaniak.com` on port `587` with STARTTLS (their
+recommendation) or port `465` with implicit SSL. Set
+`INFOMANIAK_SMTP_ENCRYPTION=ssl` if you use 465.
+
+Two things are worth knowing:
+
+- **Sent copies.** SMTP does not put anything in your mailbox's Sent folder, so
+  after a successful send the app appends the same message to the Sent mailbox
+  over IMAP (`INFOMANIAK_MAIL_SAVE_SENT`, on by default). If that append fails
+  the send still counts as successful and the tool reports
+  `"saved_to_sent": false`.
+- **Consent.** The OAuth scope granted to ChatGPT is `mail`, which covers both
+  reading and (when enabled) sending. If you want to stop ChatGPT from sending,
+  turn `INFOMANIAK_MAIL_SEND_ENABLED` back off rather than relying on the grant;
+  the tool disappears immediately.
 
 ---
 
@@ -189,6 +225,8 @@ curl https://calendar.example.com/health/caldav
 
 curl https://calendar.example.com/health/mail
 # {"status":"ok"}   (after configuring the mailbox; {"status":"not_configured"} if mail is disabled)
+# with sending enabled: {"status":"ok","imap":"ok","smtp":"ok"}, or 503 with
+# {"status":"degraded","imap":"ok","smtp":"unavailable"} when SMTP is misconfigured
 ```
 
 ---
@@ -218,7 +256,12 @@ In the hosting panel, set the PHP version to **8.3 or 8.4** and enable these
 extensions (they are standard, but `fileinfo` is sometimes off by default):
 
 `curl`, `mbstring`, `openssl`, `fileinfo`, `dom`, `xml`, `xmlwriter`, `iconv`,
-`zip`.
+`zip`, `zlib`.
+
+If you enable sending and intend to attach files, also raise PHP's
+`post_max_size` (and, if set, `upload_max_filesize`) to comfortably above the
+largest attachment you expect: the base64 payload travels in the request body,
+so it is about a third larger than the file itself.
 
 ### 3. Build the vendor directory
 
@@ -294,7 +337,7 @@ data/
 │   ├── access_tokens/      # access tokens (hashed)
 │   └── refresh_tokens/     # refresh tokens (hashed, rotated)
 ├── sessions/               # MCP session state (handshake era)
-├── rate_limit/             # login rate limiting state
+├── rate_limit/             # login and outgoing-mail rate limiting state
 ├── session.key             # HMAC key for the login session cookie
 └── app.log
 ```
@@ -397,6 +440,12 @@ Supported endpoints:
    - *"What's on my calendar next Tuesday?"* → calls `get_events`
    - *"Schedule a 30 minute meeting called 'Design review' tomorrow at 2pm."*
      → calls `create_event`
+   - *"Show me the last three emails from my accountant."* → calls
+     `search_emails`
+   - *"What does the invoice attached to that email say?"* → calls
+     `read_attachment`
+   - *"Reply to Anna that I'll be there at 2pm."* → calls `send_email` (only
+     when sending is enabled)
 
 ### Configuration values that come from ChatGPT
 
@@ -423,24 +472,58 @@ The application validates all of these against registered/expected values.
 | `update_event` | write | Update event fields; only provided fields change, others are preserved. |
 | `delete_event` | write | Permanently delete an event (destructive, cannot be undone). |
 
-Mail tools (read-only; registered only when `INFOMANIAK_MAIL_ADDRESS` is set):
+Mail tools (registered only when `INFOMANIAK_MAIL_ADDRESS` is set):
 
 | Tool | Read/Write | Description |
 | --- | --- | --- |
 | `list_mailboxes` | read | List mailboxes (folders) with their `name` and `path`. Use this first to obtain a mailbox path. |
 | `list_emails` | read | Most recent messages in a mailbox (`mailbox`, optional `start`/`end`, `limit`, `unread_only`). Returns headers, newest first. |
 | `search_emails` | read | Search by text (sender/recipients/subject/body), and optionally by `from`, `subject`, date range and mailbox. Returns headers. |
-| `get_email` | read | Fetch one message by `uid`, including a truncated plain-text body and attachment names. |
+| `get_email` | read | Fetch one message by `uid`, including a truncated plain-text body and the metadata of its attachments (`name`, `type`, `size`, `index`). Attachment content is not read. |
+| `read_attachment` | read | Extract the text of a **PDF** attachment (`uid`, optional `attachment` name or index, `mailbox`, `max_chars`). This is the only operation that parses an attachment. |
+| `send_email` | **write** | Send a message (`to`, `subject`, `text`/`html`, optional `cc`/`bcc`/`reply_to`/`in_reply_to`/`attachments`). Registered **only** when `INFOMANIAK_MAIL_SEND_ENABLED=1`. |
 
-The `mailbox` argument of `list_emails`, `search_emails` and `get_email` takes
-the `path` (or the `name`) returned by `list_mailboxes`. Mailbox names that
-contain non-ASCII characters are transmitted by IMAP in modified UTF-7
-(RFC 3501, e.g. `ŠCKR TODO` ⇄ `&AWA-CKR TODO`); both the readable name and that
-wire form are accepted, so a `path` copied from `list_mailboxes` always works.
+The `mailbox` argument of `list_emails`, `search_emails`, `get_email` and
+`read_attachment` takes the `path` (or the `name`) returned by
+`list_mailboxes`. Mailbox names that contain non-ASCII characters are
+transmitted by IMAP in modified UTF-7 (RFC 3501, e.g. `ŠCKR TODO` ⇄
+`&AWA-CKR TODO`); both the readable name and that wire form are accepted, so a
+`path` copied from `list_mailboxes` always works.
 
-Mail reads never mark messages as read (IMAP `PEEK`), never download attachment
-content, and never send, move or delete messages. Summaries are produced by the
-model from the returned message bodies.
+Mail reads never mark messages as read (IMAP `PEEK`), and reading never sends,
+moves or deletes anything. Summaries are produced by the model from the returned
+message bodies.
+
+### Reading PDF attachments
+
+`get_email` reports what attachments a message has, but never reads their
+contents: PDF parsing is deliberately a separate, on-demand step, because
+inflating and interpreting a PDF costs far more memory and time than reading the
+message around it. `read_attachment` is called only when the user actually asks
+what an attachment says, and it stops reading pages as soon as it has collected
+`max_chars` characters.
+
+Notes and limitations:
+
+- Only `application/pdf` attachments can be read; anything else is refused with
+  a clear error.
+- Scanned/image-only PDFs contain no text objects and legitimately return an
+  empty string. There is no OCR.
+- Encrypted, damaged or oversized attachments (over
+  `INFOMANIAK_MAIL_MAX_ATTACHMENT_BYTES`) produce an error rather than a partial
+  or empty result.
+- Nothing is written to disk; the bytes are decoded, parsed and discarded in
+  memory.
+
+### Sending email
+
+`send_email` is only registered when `INFOMANIAK_MAIL_SEND_ENABLED=1`, and it
+sends from `INFOMANIAK_MAIL_ADDRESS`. Every address is validated as a plain
+address, so the tool cannot be used to inject headers: control characters in
+the subject, in a file name or in an address are rejected outright, and display
+names are not accepted. Recipients, attachment size and send rate are all
+capped server-side (see the `.env` table), and a copy of each sent message is
+appended to the Sent mailbox so webmail shows it too.
 
 All dates/times are ISO 8601. Time zone information from the iCalendar data is
 preserved (the server never silently converts to the server's local time
@@ -467,11 +550,16 @@ zone).
   storage keys are validated (no path traversal); atomic writes.
 - **Logging:** operational logs never include the Infomaniak password, OAuth
   tokens, authorization codes, calendar contents, or email contents.
-- **Mail:** read-only by default and by design. Message fetches use IMAP `PEEK`
-  (messages are never marked as read), attachment content is never downloaded,
-  bodies are truncated, and results are bounded by a server-side limit. The
-  mailbox password is used only server-side and never appears in MCP responses
-  or logs.
+- **Mail:** reading is read-only by design: message fetches use IMAP `PEEK`
+  (messages are never marked as read), results are bounded by a server-side
+  limit, and bodies are truncated. Attachment content is decoded only when
+  `read_attachment` is called for that specific attachment. Sending is a
+  separate, explicitly opted-in capability: it is off unless
+  `INFOMANIAK_MAIL_SEND_ENABLED=1`, and even then every address is validated
+  against header injection, recipients/attachments/sends are capped, and the
+  transport's own error text is never returned (it can contain the SMTP
+  conversation, including the base64 credentials). The mailbox password is used
+  only server-side and never appears in MCP responses or logs.
 - **No credential leakage:** Infomaniak credentials are used only server-side
   and never appear in MCP tool responses, errors, or browser responses.
 
@@ -488,9 +576,13 @@ The suite covers the OAuth server (discovery, DCR, PKCE, code exchange,
 refresh rotation, invalid/expired tokens, scopes), filesystem storage (atomic
 writes, expiry, cleanup), calendar logic (event parsing, creation, update with
 ETag-conflict handling, deletion, free-slot calculation) using a mocked CalDAV
-client, and mail logic (mailbox listing, modified UTF-7 mailbox names, search
-criteria/date handling, body extraction and truncation) using a mocked IMAP
-client — no live Infomaniak account is required.
+client, mail logic (mailbox listing, modified UTF-7 mailbox names, search
+criteria/date handling, body extraction and truncation, attachment selection and
+send-side validation) using a mocked IMAP client, PDF text extraction against a
+generated PDF, the SMTP message that is handed to the mailer (from address, MIME
+headers, threading, attachments, and that Bcc is stripped from the stored copy),
+and the MCP tool surface itself (tool registration, schemas, tool errors) — no
+live Infomaniak account is required.
 
 ---
 
@@ -518,14 +610,14 @@ infomaniak-mcp/
 │   ├── index.php          # front controller + routing
 │   └── .htaccess
 ├── src/
-│   ├── Auth/              # login session (signed cookie) + rate limiter
+│   ├── Auth/              # login session (signed cookie)
 │   ├── Calendar/          # CalDavClient, CalendarService, iCalendar codec
-│   ├── Mail/              # IMAP client + MailService (read-only mail)
+│   ├── Mail/              # IMAP client, SMTP sender, MailService, PDF text extraction
 │   ├── Http/              # response helpers, OAuth controller, HTML templates
 │   ├── Mcp/               # MCP server + tool definitions
 │   ├── OAuth/             # authorization server, client/token stores, validator
-│   ├── Storage/           # atomic JSON file store
-│   ├── Support/           # PSR-3 file logger
+│   ├── Storage/           # atomic JSON file store, sliding-window rate limiter
+│   ├── Support/           # PSR-3 file logger, byte formatting
 │   └── Config.php
 ├── data/                  # runtime state (outside web root)
 ├── bin/generate-password.php

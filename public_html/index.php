@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 use App\Auth\LoginSession;
-use App\Auth\RateLimiter;
 use App\Calendar\CalDavClient;
 use App\Calendar\CalendarService;
 use App\Config;
@@ -11,12 +10,15 @@ use App\Http\OAuthController;
 use App\Http\Response;
 use App\Mail\MailClient;
 use App\Mail\MailService;
+use App\Mail\PdfTextExtractor;
+use App\Mail\SmtpMailSender;
 use App\Mcp\McpServer;
 use App\OAuth\AuthorizationServer;
 use App\OAuth\ClientStore;
 use App\OAuth\TokenStore;
 use App\OAuth\TokenValidator;
 use App\Storage\FileStore;
+use App\Storage\RateLimiter;
 use App\Support\FileLogger;
 use App\Support\SecretRedactor;
 use Http\Discovery\Psr17Factory;
@@ -198,19 +200,46 @@ try {
     ));
 
     // Mail is optional: when no mailbox address is configured, the mail tools
-    // are simply not registered.
-    $mailFactory = static function () use ($config): ?MailService {
+    // are simply not registered. Sending is opt-in on top of that, so the send
+    // tool only exists when INFOMANIAK_MAIL_SEND_ENABLED is on.
+    $mailFactory = static function () use ($config, $dataDir): ?MailService {
         $address = $config->get('INFOMANIAK_MAIL_ADDRESS', '') ?? '';
         if ('' === $address) {
             return null;
         }
 
-        return new MailService(MailClient::create(
-            $config->get('INFOMANIAK_MAIL_HOST', 'mail.infomaniak.com') ?? 'mail.infomaniak.com',
-            $config->int('INFOMANIAK_MAIL_PORT', 993),
-            $address,
-            $config->get('INFOMANIAK_MAIL_PASSWORD', '') ?? '',
-        ));
+        $password = $config->get('INFOMANIAK_MAIL_PASSWORD', '') ?? '';
+        $maxAttachmentBytes = max(1024, $config->int('INFOMANIAK_MAIL_MAX_ATTACHMENT_BYTES', 10485760));
+
+        $sender = $config->bool('INFOMANIAK_MAIL_SEND_ENABLED', false)
+            ? SmtpMailSender::create(
+                $config->get('INFOMANIAK_SMTP_HOST', 'mail.infomaniak.com') ?? 'mail.infomaniak.com',
+                $config->int('INFOMANIAK_SMTP_PORT', 587),
+                $config->get('INFOMANIAK_SMTP_ENCRYPTION', 'starttls') ?? 'starttls',
+                $address,
+                $password,
+            )
+            : null;
+
+        return new MailService(
+            client: MailClient::create(
+                $config->get('INFOMANIAK_MAIL_HOST', 'mail.infomaniak.com') ?? 'mail.infomaniak.com',
+                $config->int('INFOMANIAK_MAIL_PORT', 993),
+                $address,
+                $password,
+            ),
+            pdf: new PdfTextExtractor($maxAttachmentBytes),
+            sender: $sender,
+            sendLimiter: null === $sender ? null : new RateLimiter(
+                new FileStore($dataDir.'/rate_limit/send'),
+                3600,
+                max(1, $config->int('INFOMANIAK_MAIL_MAX_SENDS_PER_HOUR', 30)),
+            ),
+            saveSent: $config->bool('INFOMANIAK_MAIL_SAVE_SENT', true),
+            sentMailbox: $config->get('INFOMANIAK_MAIL_SENT_MAILBOX'),
+            maxRecipients: max(1, $config->int('INFOMANIAK_MAIL_MAX_RECIPIENTS', 10)),
+            maxSendBytes: $maxAttachmentBytes,
+        );
     };
 
     $tokenValidator = new TokenValidator($tokens, $authServer);
@@ -296,12 +325,26 @@ function route(
 
         try {
             $mail->check();
-
-            return Response::json(['status' => 'ok']);
         } catch (\App\Mail\MailException $e) {
             return Response::json(['status' => 'unavailable', 'error' => $e->getMessage()], 503);
         } catch (Throwable) {
             return Response::json(['status' => 'unavailable', 'error' => 'Mail server unavailable.'], 503);
+        }
+
+        // When sending is enabled, the outgoing server is probed too, so a bad
+        // SMTP setting shows up here rather than on the first send.
+        if (!$mail->canSend()) {
+            return Response::json(['status' => 'ok']);
+        }
+
+        try {
+            $mail->checkSender();
+
+            return Response::json(['status' => 'ok', 'imap' => 'ok', 'smtp' => 'ok']);
+        } catch (\App\Mail\MailException $e) {
+            return Response::json(['status' => 'degraded', 'imap' => 'ok', 'smtp' => 'unavailable', 'error' => $e->getMessage()], 503);
+        } catch (Throwable) {
+            return Response::json(['status' => 'degraded', 'imap' => 'ok', 'smtp' => 'unavailable', 'error' => 'Outgoing mail server unavailable.'], 503);
         }
     }
 

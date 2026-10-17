@@ -28,6 +28,7 @@ $requiredExtensions = [
     'ctype' => 'string handling',
     'iconv' => 'required by the IMAP library',
     'zip' => 'required by the IMAP library',
+    'zlib' => 'PDF text extraction',
 ];
 
 $root = dirname(__DIR__);

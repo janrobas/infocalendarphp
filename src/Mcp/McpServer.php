@@ -28,11 +28,11 @@ final class McpServer
             ->setLogger($logger ?? new NullLogger())
             ->setServerInfo(
                 name: 'infomaniak',
-                version: '1.1.0',
+                version: '1.2.0',
                 title: 'Infomaniak Calendar & Mail',
-                description: 'Access the user\'s Infomaniak calendars and mailbox: list calendars, read, search, create, update and delete events, find free time slots, and read/search email (mail is read-only).',
+                description: 'Access the user\'s Infomaniak calendars and mailbox: list calendars, read, search, create, update and delete events, find free time slots, read and search email, read the text of PDF attachments, and send email.',
             )
-            ->setInstructions('The user\'s Infomaniak calendar and mailbox. Use list_calendars first to obtain a calendar_id, then use the other calendar tools. Use list_mailboxes first to obtain a mailbox path, then use the mail tools. Dates and times are ISO 8601 strings. Read-only tools never change anything. Calendar read-only tools: list_calendars, get_events, search_events, find_free_slots. Calendar mutating tools: create_event, update_event, delete_event. Mail tools are read-only: list_mailboxes, list_emails, search_emails, get_email.')
+            ->setInstructions('The user\'s Infomaniak calendar and mailbox. Use list_calendars first to obtain a calendar_id, then use the other calendar tools. Use list_mailboxes first to obtain a mailbox path, then use the mail tools. Dates and times are ISO 8601 strings. Read-only tools never change anything. Calendar read-only tools: list_calendars, get_events, search_events, find_free_slots. Calendar mutating tools: create_event, update_event, delete_event. Mail read-only tools: list_mailboxes, list_emails, search_emails, get_email, read_attachment. read_attachment returns the text of a PDF attachment and is only worth calling when the user asks about the contents of an attachment. send_email sends a real email to real people: only call it when the user has explicitly asked you to send a message, and state the recipients and subject before you do.')
             ->setSession(new FileSessionStore($sessionDir))
             ->addTool(
                 handler: static fn (): array => self::guard(static fn (): array => $calendar->listCalendars()),
@@ -180,8 +180,9 @@ final class McpServer
     }
 
     /**
-     * Register the read-only mail tools. Kept separate so they are only added
-     * when the mailbox is configured.
+     * Register the mail tools. Kept separate so they are only added when the
+     * mailbox is configured; the send tool is added on top of that only when
+     * sending has been enabled by configuration.
      */
     private static function registerMailTools(\Mcp\Server\Builder $builder, MailService $mail): void
     {
@@ -241,7 +242,7 @@ final class McpServer
                     static fn (): array => $mail->getEmail($uid, $mailbox, $max_chars),
                 ),
                 name: 'get_email',
-                description: 'Retrieve a single email by its uid, including a plain-text version of the body (truncated) and the list of attachment names. Provide the uid from list_emails or search_emails. This tool only reads data and never marks the message as read.',
+                description: 'Retrieve a single email by its uid, including a plain-text version of the body (truncated) and the list of its attachments (name, type, size and index). Attachment content is not read and PDFs are not parsed: to read what a PDF attachment says, call read_attachment with the attachment name or index from this result. Provide the uid from list_emails or search_emails. This tool only reads data and never marks the message as read.',
                 annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
                 inputSchema: [
                     'type' => 'object',
@@ -253,6 +254,99 @@ final class McpServer
                     'required' => ['uid'],
                 ],
             );
+
+        if ($mail->canReadAttachments()) {
+            $builder->addTool(
+                handler: static fn (string $uid, ?string $attachment = null, ?string $mailbox = null, ?int $max_chars = null): array => self::guardMail(
+                    static fn (): array => $mail->readAttachment($uid, $attachment, $mailbox, $max_chars),
+                ),
+                name: 'read_attachment',
+                description: 'Read the text of a PDF attachment of an email. Use this when the user asks what an attachment says (an invoice, a report, a contract, a ticket). Provide the uid and either the attachment name or its index from get_email; when the email has a single PDF you may omit the attachment. Only PDF attachments can be read, the text is truncated, and scanned PDFs that contain only images return no text (there is no OCR). This tool only reads data.',
+                annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
+                inputSchema: [
+                    'type' => 'object',
+                    'properties' => [
+                        'uid' => ['type' => 'string', 'description' => 'The message uid, as returned by list_emails or search_emails.'],
+                        'attachment' => ['type' => 'string', 'description' => 'Optional attachment name or 1-based index, as returned by get_email. Omit it when the email has a single PDF attachment.'],
+                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path, as returned by list_mailboxes (the readable name is accepted too). Defaults to INBOX.'],
+                        'max_chars' => ['type' => 'integer', 'description' => 'Optional maximum number of characters of extracted text to return.'],
+                    ],
+                    'required' => ['uid'],
+                ],
+            );
+        }
+
+        if (!$mail->canSend()) {
+            return;
+        }
+
+        $builder->addTool(
+            handler: static function (
+                array|string|null $to = null,
+                ?string $subject = null,
+                ?string $text = null,
+                ?string $html = null,
+                array|string|null $cc = null,
+                array|string|null $bcc = null,
+                ?string $reply_to = null,
+                ?string $in_reply_to = null,
+                array $attachments = [],
+            ) use ($mail): array {
+                return self::guardMail(static fn (): array => $mail->sendEmail(
+                    $to,
+                    $subject,
+                    $text,
+                    $html,
+                    $cc,
+                    $bcc,
+                    $reply_to,
+                    $in_reply_to,
+                    $attachments,
+                ));
+            },
+            name: 'send_email',
+            description: 'Send an email from the user\'s mailbox. This sends a real message to real people and cannot be undone, so only call it when the user has explicitly asked you to send an email, and be sure the recipients, subject and body are correct (say who it goes to before sending). Addresses must be plain email addresses; comma-separated strings and lists are both accepted. Provide text, html or both. To reply within a thread, pass the message_id of the message being answered as in_reply_to. Attachments are passed as base64.',
+            annotations: new ToolAnnotations(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true),
+            inputSchema: [
+                'type' => 'object',
+                'properties' => [
+                    'to' => [
+                        'type' => ['string', 'array'],
+                        'items' => ['type' => 'string'],
+                        'description' => 'The recipient address, or a list of addresses. Comma-separated strings are split.',
+                    ],
+                    'subject' => ['type' => 'string', 'description' => 'The subject line.'],
+                    'text' => ['type' => 'string', 'description' => 'The plain-text body. Provide this, html, or both.'],
+                    'html' => ['type' => 'string', 'description' => 'Optional HTML body.'],
+                    'cc' => [
+                        'type' => ['string', 'array'],
+                        'items' => ['type' => 'string'],
+                        'description' => 'Optional cc address or list of addresses.',
+                    ],
+                    'bcc' => [
+                        'type' => ['string', 'array'],
+                        'items' => ['type' => 'string'],
+                        'description' => 'Optional bcc address or list of addresses.',
+                    ],
+                    'reply_to' => ['type' => 'string', 'description' => 'Optional Reply-To address.'],
+                    'in_reply_to' => ['type' => 'string', 'description' => 'Optional Message-ID of the email being answered, such as <abc@example.com>. Sets the In-Reply-To and References headers so the message stays in the same thread.'],
+                    'attachments' => [
+                        'type' => 'array',
+                        'description' => 'Optional attachments.',
+                        'items' => [
+                            'type' => 'object',
+                            'properties' => [
+                                'name' => ['type' => 'string', 'description' => 'File name, including the extension.'],
+                                'content_base64' => ['type' => 'string', 'description' => 'The file content, base64-encoded.'],
+                                'content_type' => ['type' => 'string', 'description' => 'Optional MIME type; it is guessed from the file name when omitted.'],
+                            ],
+                            'required' => ['name', 'content_base64'],
+                        ],
+                    ],
+                ],
+                'required' => ['to', 'subject'],
+            ],
+        );
     }
 
     /**

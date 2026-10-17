@@ -126,6 +126,46 @@ final class McpServerTest extends TestCase
     }
 
     /**
+     * list_emails and search_emails report the uid as a number, so a client
+     * that hands that value straight back must not be turned away by the input
+     * schema of the tools that take a uid.
+     */
+    public function testEmailUidIsAcceptedAsANumberAndAsAString(): void
+    {
+        $tools = $this->toolSchemas();
+
+        foreach (['get_email', 'read_attachment'] as $name) {
+            $types = $tools[$name]['inputSchema']['properties']['uid']['type'] ?? null;
+
+            self::assertIsArray($types, "The uid of {$name} should accept more than one type.");
+            self::assertContains('string', $types, $name);
+            self::assertContains('integer', $types, $name);
+        }
+    }
+
+    public function testItReadsAnEmailWithANumericUid(): void
+    {
+        $result = $this->callTool('get_email', ['uid' => 20988]);
+
+        self::assertArrayNotHasKey('error', $result, json_encode($result));
+        self::assertFalse($result['result']['isError'] ?? false, $this->text($result));
+
+        $email = $result['result']['structuredContent']['email'];
+
+        self::assertSame(20988, $email['uid']);
+        self::assertSame('Order received.', $email['body']);
+    }
+
+    public function testItReadsAnAttachmentWithANumericUid(): void
+    {
+        $result = $this->callTool('read_attachment', ['uid' => 42, 'attachment' => 'invoice.pdf']);
+
+        self::assertArrayNotHasKey('error', $result, json_encode($result));
+        self::assertFalse($result['result']['isError'] ?? false, $this->text($result));
+        self::assertSame('Total: 42 EUR', $result['result']['structuredContent']['attachment']['text']);
+    }
+
+    /**
      * @return list<string>
      */
     private function toolNames(bool $sending = true): array
@@ -133,6 +173,21 @@ final class McpServerTest extends TestCase
         $decoded = $this->post(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list'], $sending);
 
         return array_column($decoded['result']['tools'] ?? [], 'name');
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function toolSchemas(bool $sending = true): array
+    {
+        $decoded = $this->post(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list'], $sending);
+
+        $schemas = [];
+        foreach ($decoded['result']['tools'] ?? [] as $tool) {
+            $schemas[$tool['name']] = $tool;
+        }
+
+        return $schemas;
     }
 
 
@@ -229,6 +284,26 @@ final class McpServerTest extends TestCase
                     'type' => 'application/pdf',
                     'size' => 128,
                     'content' => PdfFixture::create('Total: 42 EUR'),
+                ];
+            }
+
+            public function getMessage(string $folderPath, int $uid): ?array
+            {
+                return [
+                    'uid' => $uid,
+                    'subject' => 'Your order',
+                    'from' => 'shop@example.com',
+                    'to' => 'me@example.com',
+                    'date' => '2026-10-17T11:23:34+02:00',
+                    'seen' => true,
+                    'flagged' => false,
+                    'has_attachments' => false,
+                    'cc' => '',
+                    'message_id' => '<order@example.com>',
+                    'in_reply_to' => '',
+                    'text' => 'Order received.',
+                    'html' => null,
+                    'attachments' => [],
                 ];
             }
 

@@ -247,7 +247,7 @@ final class McpServer
                 inputSchema: [
                     'type' => 'object',
                     'properties' => [
-                        'uid' => ['type' => 'string', 'description' => 'The message uid, as returned by list_emails or search_emails.'],
+                        'uid' => ['type' => ['string', 'integer'], 'description' => 'The message uid, as returned by list_emails or search_emails (a number and a string are both accepted).'],
                         'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path, as returned by list_mailboxes (the readable name is accepted too). Defaults to INBOX.'],
                         'max_chars' => ['type' => 'integer', 'description' => 'Optional maximum number of body characters to return.'],
                     ],
@@ -266,7 +266,7 @@ final class McpServer
                 inputSchema: [
                     'type' => 'object',
                     'properties' => [
-                        'uid' => ['type' => 'string', 'description' => 'The message uid, as returned by list_emails or search_emails.'],
+                        'uid' => ['type' => ['string', 'integer'], 'description' => 'The message uid, as returned by list_emails or search_emails (a number and a string are both accepted).'],
                         'attachment' => ['type' => 'string', 'description' => 'Optional attachment name or 1-based index, as returned by get_email. Omit it when the email has a single PDF attachment.'],
                         'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path, as returned by list_mailboxes (the readable name is accepted too). Defaults to INBOX.'],
                         'max_chars' => ['type' => 'integer', 'description' => 'Optional maximum number of characters of extracted text to return.'],

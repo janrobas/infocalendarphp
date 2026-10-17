@@ -490,6 +490,11 @@ transmitted by IMAP in modified UTF-7 (RFC 3501, e.g. `ŠCKR TODO` ⇄
 `&AWA-CKR TODO`); both the readable name and that wire form are accepted, so a
 `path` copied from `list_mailboxes` always works.
 
+The `uid` argument of `get_email` and `read_attachment` is the message's IMAP
+UID as reported by `list_emails`/`search_emails`. Those results give it as a
+JSON number; a number and its string form are both accepted, so a value copied
+straight from a listing always works.
+
 Mail reads never mark messages as read (IMAP `PEEK`), and reading never sends,
 moves or deletes anything. Summaries are produced by the model from the returned
 message bodies.

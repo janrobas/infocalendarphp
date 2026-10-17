@@ -17,8 +17,9 @@ use Symfony\Component\Mime\MimeTypes;
  *
  * Note on error reporting: the transport's own exceptions can carry the raw
  * SMTP conversation, which includes the base64-encoded credentials. This class
- * therefore never forwards a transport message to the caller; unlike IMAP reads,
- * a failed send says only that it failed.
+ * therefore never forwards a transport message to the caller; a failed send
+ * reports only a short reason derived from the reply code and the port we
+ * configured, never the conversation itself.
  *
  * Not final so tests can substitute a capturing transport, the same way
  * {@see MailClient} is subclassed for the IMAP tests.
@@ -58,8 +59,8 @@ class SmtpMailSender implements MailSender
 
         try {
             $this->transport()->send($email);
-        } catch (\Throwable) {
-            throw new MailException('The email could not be sent. Check the SMTP settings and the mail password.');
+        } catch (\Throwable $e) {
+            throw new MailException('The email could not be sent. '.$this->reason($e));
         }
 
         $messageId = $email->getHeaders()->get('Message-ID')?->getBodyAsString() ?? '';
@@ -79,11 +80,56 @@ class SmtpMailSender implements MailSender
             // start() performs the full handshake: greeting, EHLO, STARTTLS when
             // offered, and authentication. No message is sent.
             $transport->start();
-        } catch (\Throwable) {
-            throw new MailException('The outgoing mail server could not be reached or rejected the credentials.');
+        } catch (\Throwable $e) {
+            throw new MailException($this->reason($e));
         } finally {
             $transport->stop();
         }
+    }
+
+    /**
+     * Explain a transport failure in one short sentence, so an operator can
+     * tell a blocked port from a rejected password.
+     *
+     * The exception's own message is deliberately never forwarded: Symfony's
+     * SMTP errors quote the server's reply and, in debug output, the raw
+     * conversation — which carries the base64-encoded credentials. Only the
+     * reply *code* and a few fixed phrases from the mailer library are read
+     * here, and the text is built from our own configuration.
+     */
+    private function reason(\Throwable $error): string
+    {
+        $code = $error->getCode();
+
+        // A numeric reply code means the server did answer and refused us, so
+        // the credentials — or the account's permission to send — are the
+        // likely cause. 535 is "authentication failed".
+        if (\is_int($code) && $code >= 400 && $code < 600) {
+            return sprintf(
+                'The mail server rejected the connection (SMTP %d). Check the sending address and its mail password.',
+                $code,
+            );
+        }
+
+        $message = $error->getMessage();
+
+        if (str_contains($message, 'TLS')) {
+            return sprintf(
+                'The connection to %s:%d could not be secured with TLS. The host may have outdated CA certificates.',
+                $this->host,
+                $this->port,
+            );
+        }
+
+        if (false !== stripos($message, 'authenticat')) {
+            return 'The mail server rejected the credentials. Check the sending address and its mail password.';
+        }
+
+        return sprintf(
+            'The mail server could not be reached at %s:%d. Check that the host allows outgoing connections on this port; port 465 with INFOMANIAK_SMTP_ENCRYPTION=ssl is the alternative.',
+            $this->host,
+            $this->port,
+        );
     }
 
     private function build(OutgoingMessage $message): Email

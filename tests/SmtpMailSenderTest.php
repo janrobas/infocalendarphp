@@ -110,6 +110,53 @@ final class SmtpMailSenderTest extends TestCase
         }
     }
 
+    public function testARefusedReplyNamesTheSmtpCode(): void
+    {
+        $transport = new CapturingTransport(new TransportException(
+            'Failed to authenticate on SMTP server with username "me@example.com" using the following authenticators: "LOGIN". Authenticator "LOGIN" returned "535 5.7.8 Authentication failed".',
+            535,
+        ));
+
+        try {
+            $this->sender($transport)->send($this->message());
+            self::fail('The failure should have been turned into a MailException.');
+        } catch (MailException $e) {
+            self::assertStringContainsString('SMTP 535', $e->getMessage());
+            self::assertStringContainsString('mail password', $e->getMessage());
+            self::assertStringNotContainsString('Authenticator', $e->getMessage());
+        }
+    }
+
+    public function testAnUnreachableServerNamesTheHostAndPort(): void
+    {
+        $transport = new CapturingTransport(new TransportException(
+            'Connection could not be established with host "tcp://mail.infomaniak.com:587": stream_socket_client(): Unable to connect (Connection timed out)',
+        ));
+
+        try {
+            $this->sender($transport)->send($this->message());
+            self::fail('The failure should have been turned into a MailException.');
+        } catch (MailException $e) {
+            self::assertStringContainsString('mail.infomaniak.com:587', $e->getMessage());
+            self::assertStringContainsString('outgoing connections', $e->getMessage());
+        }
+    }
+
+    public function testATlsFailureIsReportedAsATlsFailure(): void
+    {
+        $transport = new CapturingTransport(new TransportException(
+            'Unable to connect with STARTTLS: certificate verify failed',
+        ));
+
+        try {
+            $this->sender($transport)->send($this->message());
+            self::fail('The failure should have been turned into a MailException.');
+        } catch (MailException $e) {
+            self::assertStringContainsString('TLS', $e->getMessage());
+            self::assertStringContainsString('CA certificates', $e->getMessage());
+        }
+    }
+
     public function testCheckRefusesATransportThatIsNotSmtp(): void
     {
         $sender = $this->sender(new CapturingTransport());

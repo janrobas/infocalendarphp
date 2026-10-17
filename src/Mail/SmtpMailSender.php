@@ -126,7 +126,7 @@ class SmtpMailSender implements MailSender
         }
 
         return sprintf(
-            'The mail server could not be reached at %s:%d. Check that the host allows outgoing connections on this port; port 465 with INFOMANIAK_SMTP_ENCRYPTION=ssl is the alternative.',
+            'The mail server could not be reached at %s:%d. Check that the host allows outgoing connections on this port; Infomaniak also accepts 465 with INFOMANIAK_SMTP_ENCRYPTION=ssl and 2525 with starttls.',
             $this->host,
             $this->port,
         );

@@ -85,7 +85,7 @@ chmod 700 data
 | `INFOMANIAK_MAIL_PASSWORD` | The **device/mail password** for that address (not the calendar application password). |
 | `INFOMANIAK_MAIL_SEND_ENABLED` | `1` to enable sending email. Defaults to `0`, which means `send_email` is not registered at all. |
 | `INFOMANIAK_SMTP_HOST` | SMTP host. Defaults to `mail.infomaniak.com`. |
-| `INFOMANIAK_SMTP_PORT` | SMTP port. Defaults to `587` (STARTTLS). Use `465` with `INFOMANIAK_SMTP_ENCRYPTION=ssl`. |
+| `INFOMANIAK_SMTP_PORT` | SMTP port. Defaults to `587` (STARTTLS). Use `465` with `INFOMANIAK_SMTP_ENCRYPTION=ssl`. If the host blocks both, Infomaniak also accepts `2525` with STARTTLS. |
 | `INFOMANIAK_SMTP_ENCRYPTION` | `starttls` (default) or `ssl` (implicit TLS). |
 | `INFOMANIAK_MAIL_SAVE_SENT` | `1` (default) to append a copy of sent messages to the Sent mailbox over IMAP, since SMTP alone does not record them. |
 | `INFOMANIAK_MAIL_SENT_MAILBOX` | Mailbox to save sent copies in. Empty means detect it by name (`Sent`, `Envoyés`, …). |
@@ -139,6 +139,12 @@ opt in** with `INFOMANIAK_MAIL_SEND_ENABLED=1`. While it is off, the
 Infomaniak accepts `mail.infomaniak.com` on port `587` with STARTTLS (their
 recommendation) or port `465` with implicit SSL. Set
 `INFOMANIAK_SMTP_ENCRYPTION=ssl` if you use 465.
+
+Some shared hosts block outgoing SMTP to stop spam: port `25` is almost always
+blocked, and `465` and `587` often are too. Infomaniak also accepts
+authenticated submission on port `2525` with STARTTLS, which those hosts usually
+leave open, so that is the next thing to try. If every port is refused, the host
+has to unblock one — Infomaniak's API has no mail endpoint to fall back on.
 
 Two things are worth knowing:
 

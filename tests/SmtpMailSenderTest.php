@@ -139,6 +139,7 @@ final class SmtpMailSenderTest extends TestCase
         } catch (MailException $e) {
             self::assertStringContainsString('mail.infomaniak.com:587', $e->getMessage());
             self::assertStringContainsString('outgoing connections', $e->getMessage());
+            self::assertStringContainsString('2525', $e->getMessage());
         }
     }
 

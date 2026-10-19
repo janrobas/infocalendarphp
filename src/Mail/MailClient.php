@@ -26,9 +26,10 @@ use Webklex\PHPIMAP\Message;
  * its tests) never touch the vendor API.
  *
  * All reads use IMAP FT_PEEK, so reading a message through the MCP tools never
- * marks it as \Seen on the server. Attachment bodies are only decoded when
- * {@see self::getAttachmentContent()} is called; listing a message reports
- * metadata only.
+ * marks it as \Seen on the server. The one operation that changes message state
+ * is {@see self::markSeen()}, which sets or clears that flag explicitly.
+ * Attachment bodies are only decoded when {@see self::getAttachmentContent()}
+ * is called; listing a message reports metadata only.
  */
 class MailClient
 {
@@ -159,6 +160,22 @@ class MailClient
         $message = $this->fetchMessage($folderPath, $uid);
 
         return null === $message ? null : $this->mapMessage($message, true);
+    }
+
+    /**
+     * Mark a single message as read (or unread again) by setting or clearing
+     * its \Seen flag. Only the headers are fetched, never the body.
+     */
+    public function markSeen(string $folderPath, int $uid, bool $seen = true): bool
+    {
+        return $this->guard(function () use ($folderPath, $uid, $seen): bool {
+            $message = $this->fetchMessage($folderPath, $uid, false);
+            if (null === $message) {
+                throw new MailException('Email not found.');
+            }
+
+            return $seen ? $message->setFlag('Seen') : $message->unsetFlag('Seen');
+        });
     }
 
     /**
@@ -341,13 +358,14 @@ class MailClient
     }
 
     /**
-     * Fetch a message with its body, or null when it no longer exists.
+     * Fetch a message, or null when it no longer exists. The body is only
+     * downloaded when it is needed; flag changes fetch headers only.
      */
-    private function fetchMessage(string $folderPath, int $uid): ?Message
+    private function fetchMessage(string $folderPath, int $uid, bool $withBody = true): ?Message
     {
         try {
             $message = $this->folder($folderPath)->query()
-                ->setFetchBody(true)
+                ->setFetchBody($withBody)
                 ->setFetchOrderAsc()
                 ->leaveUnread()
                 ->getMessageByUid($uid);

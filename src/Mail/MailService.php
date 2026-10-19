@@ -167,6 +167,25 @@ final class MailService
     }
 
     /**
+     * Mark a single message as read (\Seen), or unread again.
+     *
+     * This is the only mail operation besides sendEmail that changes state in
+     * the mailbox: every read tool fetches with IMAP PEEK and leaves flags
+     * untouched.
+     *
+     * @return array{uid: int, mailbox: string, seen: bool}
+     */
+    public function markEmailAsRead(string $uid, ?string $mailbox, bool $read = true): array
+    {
+        $path = $this->mailbox($mailbox);
+        $messageUid = $this->uid($uid);
+
+        $this->client->markSeen($path, $messageUid, $read);
+
+        return ['uid' => $messageUid, 'mailbox' => $path, 'seen' => $read];
+    }
+
+    /**
      * Read the text of a PDF attachment.
      *
      * This is the only operation in the app that parses an attachment, and
@@ -218,7 +237,9 @@ final class MailService
      * headers: addresses are plain addresses (no display names), and the
      * subject and attachment names are rejected if they contain control
      * characters. A copy is appended to the account's Sent mailbox when that is
-     * enabled, because SMTP alone does not record sent messages.
+     * enabled, because SMTP alone does not record sent messages. When the uid
+     * of the message being replied to is supplied, that message is marked as
+     * read afterwards, as a best-effort step.
      *
      * @param string|list<string>|null                                  $to
      * @param string|list<string>|null                                  $cc
@@ -237,6 +258,8 @@ final class MailService
         ?string $replyTo = null,
         ?string $inReplyTo = null,
         array $attachments = [],
+        ?string $markReadUid = null,
+        ?string $markReadMailbox = null,
     ): array {
         if (null === $this->sender) {
             throw new MailException('Sending email is not enabled.');
@@ -283,6 +306,11 @@ final class MailService
         $inReplyTo = $this->messageId($inReplyTo);
         $attachments = $this->outgoingAttachments($attachments);
 
+        // Validate the optional replied-to uid before sending, so a bad value
+        // cannot leave a sent message behind.
+        $markReadUid = null !== $markReadUid && '' !== trim($markReadUid) ? $this->uid($markReadUid) : null;
+        $markReadMailbox = null !== $markReadUid ? $this->mailbox($markReadMailbox) : null;
+
         $message = new OutgoingMessage(
             to: $tos,
             subject: $subject,
@@ -299,6 +327,11 @@ final class MailService
 
         $result = $this->sender->send($message);
 
+        $savedToSent = $this->saveSent ? $this->appendToSent($result['raw']) : false;
+        $markedRead = null !== $markReadUid
+            && null !== $markReadMailbox
+            && $this->markReadBestEffort($markReadMailbox, $markReadUid);
+
         return [
             'status' => 'sent',
             'message_id' => $result['message_id'],
@@ -306,8 +339,23 @@ final class MailService
             'cc' => $ccs,
             'bcc' => $bccs,
             'subject' => $subject,
-            'saved_to_sent' => $this->saveSent ? $this->appendToSent($result['raw']) : false,
+            'saved_to_sent' => $savedToSent,
+            'marked_read' => $markedRead,
         ];
+    }
+
+    /**
+     * Best-effort \Seen update for the message being replied to. The mail has
+     * already left by the time this runs, so a failure here is reported (as
+     * `marked_read: false`) rather than thrown.
+     */
+    private function markReadBestEffort(string $mailbox, int $uid): bool
+    {
+        try {
+            return $this->client->markSeen($mailbox, $uid);
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**

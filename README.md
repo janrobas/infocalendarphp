@@ -15,9 +15,9 @@ with two jobs:
 1. Authenticate ChatGPT using OAuth 2.1 (authorization code + PKCE).
 2. Expose calendar operations (`list_calendars`, `get_events`, `create_event`,
    …) and mail operations (`list_mailboxes`, `search_emails`, `get_email`,
-   `read_attachment`, and — when explicitly enabled — `send_email`) over MCP
-   Streamable HTTP, backed by the live Infomaniak CalDAV server, IMAP mailbox
-   and SMTP server.
+   `mark_email_as_read`, `read_attachment`, and — when explicitly enabled —
+   `send_email`) over MCP Streamable HTTP, backed by the live Infomaniak CalDAV
+   server, IMAP mailbox and SMTP server.
 
 ```
 ChatGPT
@@ -33,11 +33,14 @@ files (data/)     (calendar)          (read mail)         (send mail)
 All calendar and mail data is read **live** from Infomaniak on every call.
 Nothing is cached locally, so there are never stale events or messages.
 
-Mail reading never sends, deletes, moves or marks messages as read. Reading and
-searching are always available; **sending is off by default** and only exists
-when `INFOMANIAK_MAIL_SEND_ENABLED=1`. PDF attachments are only decoded and
-parsed when a tool is explicitly asked to read one — listing a message never
-touches an attachment's contents.
+Mail reading never sends, deletes, moves or marks messages as read: fetches use
+IMAP `PEEK`, so opening a message leaves its flags alone. Messages are marked
+read only when that is asked for explicitly, either with `mark_email_as_read`
+or with `mark_read_uid` on `send_email`. Reading and searching are always
+available; **sending is off by default** and only exists when
+`INFOMANIAK_MAIL_SEND_ENABLED=1`. PDF attachments are only decoded and parsed
+when a tool is explicitly asked to read one — listing a message never touches
+an attachment's contents.
 
 ---
 
@@ -127,8 +130,10 @@ calendar tools are registered.
 
 Infomaniak has no REST API for mailbox contents; IMAP is the only supported
 programmatic interface. IMAP settings are `mail.infomaniak.com`, port `993`
-(implicit SSL). Reading mail through these tools uses IMAP `PEEK`, so messages
-are **never** marked as read.
+(implicit SSL). Reading mail through these tools uses IMAP `PEEK`, so merely
+listing, searching or opening a message never marks it as read; use
+`mark_email_as_read` (or `mark_read_uid` on `send_email`) when a message should
+be marked read.
 
 ### Sending email
 
@@ -450,8 +455,10 @@ Supported endpoints:
      `search_emails`
    - *"What does the invoice attached to that email say?"* → calls
      `read_attachment`
-   - *"Reply to Anna that I'll be there at 2pm."* → calls `send_email` (only
-     when sending is enabled)
+   - *"Mark the email from my accountant as read."* → calls
+     `mark_email_as_read`
+   - *"Reply to Anna that I'll be there at 2pm, and mark her email as read."*
+     → calls `send_email` with `mark_read_uid` (only when sending is enabled)
 
 ### Configuration values that come from ChatGPT
 
@@ -486,24 +493,26 @@ Mail tools (registered only when `INFOMANIAK_MAIL_ADDRESS` is set):
 | `list_emails` | read | Most recent messages in a mailbox (`mailbox`, optional `start`/`end`, `limit`, `unread_only`). Returns headers, newest first. |
 | `search_emails` | read | Search by text (sender/recipients/subject/body), and optionally by `from`, `subject`, date range and mailbox. Returns headers. |
 | `get_email` | read | Fetch one message by `uid`, including a truncated plain-text body and the metadata of its attachments (`name`, `type`, `size`, `index`). Attachment content is not read. |
+| `mark_email_as_read` | **write** | Mark one message read, or with `read=false` unread again (`uid`, optional `mailbox`). Sets the message's IMAP `\Seen` flag; nothing else is changed. |
 | `read_attachment` | read | Extract the text of a **PDF** attachment (`uid`, optional `attachment` name or index, `mailbox`, `max_chars`). This is the only operation that parses an attachment. |
-| `send_email` | **write** | Send a message (`to`, `subject`, `text`/`html`, optional `cc`/`bcc`/`reply_to`/`in_reply_to`/`attachments`). Registered **only** when `INFOMANIAK_MAIL_SEND_ENABLED=1`. |
+| `send_email` | **write** | Send a message (`to`, `subject`, `text`/`html`, optional `cc`/`bcc`/`reply_to`/`in_reply_to`/`attachments`). Pass `mark_read_uid` (and optionally `mark_read_mailbox`) to mark the replied-to message read after sending. Registered **only** when `INFOMANIAK_MAIL_SEND_ENABLED=1`. |
 
-The `mailbox` argument of `list_emails`, `search_emails`, `get_email` and
-`read_attachment` takes the `path` (or the `name`) returned by
-`list_mailboxes`. Mailbox names that contain non-ASCII characters are
-transmitted by IMAP in modified UTF-7 (RFC 3501, e.g. `ŠCKR TODO` ⇄
+The `mailbox` argument of `list_emails`, `search_emails`, `get_email`,
+`mark_email_as_read` and `read_attachment` takes the `path` (or the `name`)
+returned by `list_mailboxes`. Mailbox names that contain non-ASCII characters
+are transmitted by IMAP in modified UTF-7 (RFC 3501, e.g. `ŠCKR TODO` ⇄
 `&AWA-CKR TODO`); both the readable name and that wire form are accepted, so a
 `path` copied from `list_mailboxes` always works.
 
-The `uid` argument of `get_email` and `read_attachment` is the message's IMAP
-UID as reported by `list_emails`/`search_emails`. Those results give it as a
-JSON number; a number and its string form are both accepted, so a value copied
-straight from a listing always works.
+The `uid` argument of `get_email`, `mark_email_as_read` and `read_attachment`
+is the message's IMAP UID as reported by `list_emails`/`search_emails`. Those
+results give it as a JSON number; a number and its string form are both
+accepted, so a value copied straight from a listing always works.
 
 Mail reads never mark messages as read (IMAP `PEEK`), and reading never sends,
-moves or deletes anything. Summaries are produced by the model from the returned
-message bodies.
+moves or deletes anything. Only `mark_email_as_read`, and `send_email` when it
+is given `mark_read_uid`, change a message's state. Summaries are produced by
+the model from the returned message bodies.
 
 ### Reading PDF attachments
 
@@ -536,6 +545,12 @@ names are not accepted. Recipients, attachment size and send rate are all
 capped server-side (see the `.env` table), and a copy of each sent message is
 appended to the Sent mailbox so webmail shows it too.
 
+When `mark_read_uid` is supplied, the message being replied to is marked read
+after the mail has been sent. Like the Sent copy, this is a best-effort step:
+the result reports it as `marked_read`, and a failure to set the flag is
+reported rather than turning a successful send into an error. A uid that is not
+valid is rejected before anything is sent.
+
 All dates/times are ISO 8601. Time zone information from the iCalendar data is
 preserved (the server never silently converts to the server's local time
 zone).
@@ -561,14 +576,16 @@ zone).
   storage keys are validated (no path traversal); atomic writes.
 - **Logging:** operational logs never include the Infomaniak password, OAuth
   tokens, authorization codes, calendar contents, or email contents.
-- **Mail:** reading is read-only by design: message fetches use IMAP `PEEK`
-  (messages are never marked as read), results are bounded by a server-side
-  limit, and bodies are truncated. Attachment content is decoded only when
-  `read_attachment` is called for that specific attachment. Sending is a
-  separate, explicitly opted-in capability: it is off unless
-  `INFOMANIAK_MAIL_SEND_ENABLED=1`, and even then every address is validated
-  against header injection, recipients/attachments/sends are capped, and the
-  transport's own error text is never returned (it can contain the SMTP
+- **Mail:** reading is read-only by design: message fetches use IMAP `PEEK`, so
+  listing or opening a message never changes its flags. The only state-changing
+  mail operations are `mark_email_as_read` and a `mark_read_uid` passed to
+  `send_email`, which set or clear the `\Seen` flag and nothing else. Results
+  are bounded by a server-side limit, and bodies are truncated. Attachment
+  content is decoded only when `read_attachment` is called for that specific
+  attachment. Sending is a separate, explicitly opted-in capability: it is off
+  unless `INFOMANIAK_MAIL_SEND_ENABLED=1`, and even then every address is
+  validated against header injection, recipients/attachments/sends are capped,
+  and the transport's own error text is never returned (it can contain the SMTP
   conversation, including the base64 credentials). The mailbox password is used
   only server-side and never appears in MCP responses or logs.
 - **No credential leakage:** Infomaniak credentials are used only server-side

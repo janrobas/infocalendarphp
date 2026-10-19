@@ -28,11 +28,11 @@ final class McpServer
             ->setLogger($logger ?? new NullLogger())
             ->setServerInfo(
                 name: 'infomaniak',
-                version: '1.2.0',
+                version: '1.3.0',
                 title: 'Infomaniak Calendar & Mail',
-                description: 'Access the user\'s Infomaniak calendars and mailbox: list calendars, read, search, create, update and delete events, find free time slots, read and search email, read the text of PDF attachments, and send email.',
+                description: 'Access the user\'s Infomaniak calendars and mailbox: list calendars, read, search, create, update and delete events, find free time slots, read and search email, mark email read or unread, read the text of PDF attachments, and send email.',
             )
-            ->setInstructions('The user\'s Infomaniak calendar and mailbox. Use list_calendars first to obtain a calendar_id, then use the other calendar tools. Use list_mailboxes first to obtain a mailbox path, then use the mail tools. Dates and times are ISO 8601 strings. Read-only tools never change anything. Calendar read-only tools: list_calendars, get_events, search_events, find_free_slots. Calendar mutating tools: create_event, update_event, delete_event. Mail read-only tools: list_mailboxes, list_emails, search_emails, get_email, read_attachment. read_attachment returns the text of a PDF attachment and is only worth calling when the user asks about the contents of an attachment. send_email sends a real email to real people: only call it when the user has explicitly asked you to send a message, and state the recipients and subject before you do.')
+            ->setInstructions('The user\'s Infomaniak calendar and mailbox. Use list_calendars first to obtain a calendar_id, then use the other calendar tools. Use list_mailboxes first to obtain a mailbox path, then use the mail tools. Dates and times are ISO 8601 strings. Read-only tools never change anything. Calendar read-only tools: list_calendars, get_events, search_events, find_free_slots. Calendar mutating tools: create_event, update_event, delete_event. Mail read-only tools: list_mailboxes, list_emails, search_emails, get_email, read_attachment. Mail mutating tools: mark_email_as_read (marks one message read, or unread with read=false) and send_email. read_attachment returns the text of a PDF attachment and is only worth calling when the user asks about the contents of an attachment. send_email sends a real email to real people: only call it when the user has explicitly asked you to send a message, and state the recipients and subject before you do. When replying and the original email should end up marked read, pass its uid as mark_read_uid; that update is best effort and is reported as marked_read.')
             ->setSession(new FileSessionStore($sessionDir))
             ->addTool(
                 handler: static fn (): array => self::guard(static fn (): array => $calendar->listCalendars()),
@@ -253,6 +253,23 @@ final class McpServer
                     ],
                     'required' => ['uid'],
                 ],
+            )
+            ->addTool(
+                handler: static fn (string $uid, ?string $mailbox = null, bool $read = true): array => self::guardMail(
+                    static fn (): array => $mail->markEmailAsRead($uid, $mailbox, $read),
+                ),
+                name: 'mark_email_as_read',
+                description: 'Mark a single email as read, or with read=false as unread again. This changes the message\'s \\Seen flag on the server and is the only mail tool besides send_email that changes message state. Provide the uid from list_emails or search_emails. Only call it when the user asks for the message to be marked read or unread; it never sends, moves or deletes anything.',
+                annotations: new ToolAnnotations(readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true),
+                inputSchema: [
+                    'type' => 'object',
+                    'properties' => [
+                        'uid' => ['type' => ['string', 'integer'], 'description' => 'The message uid, as returned by list_emails or search_emails (a number and a string are both accepted).'],
+                        'mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path, as returned by list_mailboxes (the readable name is accepted too). Defaults to INBOX.'],
+                        'read' => ['type' => 'boolean', 'description' => 'True (the default) marks the message as read; false marks it unread.'],
+                    ],
+                    'required' => ['uid'],
+                ],
             );
 
         if ($mail->canReadAttachments()) {
@@ -291,6 +308,8 @@ final class McpServer
                 ?string $reply_to = null,
                 ?string $in_reply_to = null,
                 array $attachments = [],
+                string|int|null $mark_read_uid = null,
+                ?string $mark_read_mailbox = null,
             ) use ($mail): array {
                 return self::guardMail(static fn (): array => $mail->sendEmail(
                     $to,
@@ -302,10 +321,12 @@ final class McpServer
                     $reply_to,
                     $in_reply_to,
                     $attachments,
+                    null !== $mark_read_uid ? (string) $mark_read_uid : null,
+                    $mark_read_mailbox,
                 ));
             },
             name: 'send_email',
-            description: 'Send an email from the user\'s mailbox. This sends a real message to real people and cannot be undone, so only call it when the user has explicitly asked you to send an email, and be sure the recipients, subject and body are correct (say who it goes to before sending). Addresses must be plain email addresses; comma-separated strings and lists are both accepted. Provide text, html or both. To reply within a thread, pass the message_id of the message being answered as in_reply_to. Attachments are passed as base64.',
+            description: 'Send an email from the user\'s mailbox. This sends a real message to real people and cannot be undone, so only call it when the user has explicitly asked you to send an email, and be sure the recipients, subject and body are correct (say who it goes to before sending). Addresses must be plain email addresses; comma-separated strings and lists are both accepted. Provide text, html or both. To reply within a thread, pass the message_id of the message being answered as in_reply_to. When the user is replying and the original email should end up marked read, also pass its uid as mark_read_uid (and mark_read_mailbox when it is not in INBOX); that flag update happens after the message is sent, is best effort, and is reported as marked_read. Attachments are passed as base64.',
             annotations: new ToolAnnotations(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true),
             inputSchema: [
                 'type' => 'object',
@@ -330,6 +351,8 @@ final class McpServer
                     ],
                     'reply_to' => ['type' => 'string', 'description' => 'Optional Reply-To address.'],
                     'in_reply_to' => ['type' => 'string', 'description' => 'Optional Message-ID of the email being answered, such as <abc@example.com>. Sets the In-Reply-To and References headers so the message stays in the same thread.'],
+                    'mark_read_uid' => ['type' => ['string', 'integer'], 'description' => 'Optional uid of the email being replied to, as returned by list_emails or search_emails. When provided, that message is marked as read after the email is sent.'],
+                    'mark_read_mailbox' => ['type' => 'string', 'description' => 'Optional mailbox path of the email being marked read, as returned by list_mailboxes. Defaults to INBOX.'],
                     'attachments' => [
                         'type' => 'array',
                         'description' => 'Optional attachments.',

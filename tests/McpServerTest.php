@@ -31,6 +31,11 @@ final class McpServerTest extends TestCase
      */
     private object $sender;
 
+    /**
+     * The fake IMAP client; `lastFlagChange` records the last read/unread call.
+     */
+    private object $client;
+
     public function testItListsTheCalendarAndMailTools(): void
     {
         $names = $this->toolNames();
@@ -39,7 +44,7 @@ final class McpServerTest extends TestCase
             'list_calendars', 'get_events', 'search_events', 'find_free_slots',
             'create_event', 'update_event', 'delete_event',
             'list_mailboxes', 'list_emails', 'search_emails', 'get_email',
-            'read_attachment', 'send_email',
+            'mark_email_as_read', 'read_attachment', 'send_email',
         ] as $name) {
             self::assertContains($name, $names);
         }
@@ -134,7 +139,7 @@ final class McpServerTest extends TestCase
     {
         $tools = $this->toolSchemas();
 
-        foreach (['get_email', 'read_attachment'] as $name) {
+        foreach (['get_email', 'read_attachment', 'mark_email_as_read'] as $name) {
             $types = $tools[$name]['inputSchema']['properties']['uid']['type'] ?? null;
 
             self::assertIsArray($types, "The uid of {$name} should accept more than one type.");
@@ -163,6 +168,51 @@ final class McpServerTest extends TestCase
         self::assertArrayNotHasKey('error', $result, json_encode($result));
         self::assertFalse($result['result']['isError'] ?? false, $this->text($result));
         self::assertSame('Total: 42 EUR', $result['result']['structuredContent']['attachment']['text']);
+    }
+
+    public function testItMarksAnEmailAsReadThroughTheTool(): void
+    {
+        $result = $this->callTool('mark_email_as_read', ['uid' => 42]);
+
+        self::assertArrayNotHasKey('error', $result, json_encode($result));
+        self::assertFalse($result['result']['isError'] ?? false, $this->text($result));
+
+        $content = $result['result']['structuredContent'];
+
+        self::assertSame(42, $content['uid']);
+        self::assertSame('INBOX', $content['mailbox']);
+        self::assertTrue($content['seen']);
+        self::assertSame(['folder' => 'INBOX', 'uid' => 42, 'seen' => true], $this->client->lastFlagChange);
+    }
+
+    public function testItMarksAnEmailAsUnreadThroughTheTool(): void
+    {
+        $result = $this->callTool('mark_email_as_read', [
+            'uid' => 42,
+            'mailbox' => 'INBOX/Archive',
+            'read' => false,
+        ]);
+
+        self::assertArrayNotHasKey('error', $result, json_encode($result));
+        self::assertFalse($result['result']['isError'] ?? false, $this->text($result));
+        self::assertFalse($result['result']['structuredContent']['seen']);
+        self::assertSame('INBOX/Archive', $this->client->lastFlagChange['folder']);
+    }
+
+    public function testItMarksTheRepliedToEmailAsReadWhenSending(): void
+    {
+        $result = $this->callTool('send_email', [
+            'to' => 'alice@example.com',
+            'subject' => 'Re: Your order',
+            'text' => 'Thanks!',
+            'in_reply_to' => '<order@example.com>',
+            'mark_read_uid' => 20988,
+        ]);
+
+        self::assertArrayNotHasKey('error', $result, json_encode($result));
+        self::assertFalse($result['result']['isError'] ?? false, $this->text($result));
+        self::assertTrue($result['result']['structuredContent']['marked_read']);
+        self::assertSame(['folder' => 'INBOX', 'uid' => 20988, 'seen' => true], $this->client->lastFlagChange);
     }
 
     /**
@@ -272,9 +322,19 @@ final class McpServerTest extends TestCase
     private function buildServer(bool $sending): Server
     {
         $client = new class extends MailClient {
+            /** @var array<string, mixed> */
+            public array $lastFlagChange = [];
+
             public function __construct()
             {
                 parent::__construct([]);
+            }
+
+            public function markSeen(string $folderPath, int $uid, bool $seen = true): bool
+            {
+                $this->lastFlagChange = ['folder' => $folderPath, 'uid' => $uid, 'seen' => $seen];
+
+                return true;
             }
 
             public function getAttachmentContent(string $folderPath, int $uid, ?string $selector = null): ?array
@@ -334,6 +394,7 @@ final class McpServerTest extends TestCase
         };
 
         $this->sender = $sender;
+        $this->client = $client;
 
         $mail = new MailService(
             client: $client,

@@ -362,6 +362,62 @@ final class MailTest extends TestCase
     }
 
     // -----------------------------------------------------------------------
+    // mark_email_as_read
+    // -----------------------------------------------------------------------
+
+    public function testMarkEmailAsReadSetsTheSeenFlag(): void
+    {
+        $client = new FakeMailClient();
+        $service = new MailService($client);
+
+        $result = $service->markEmailAsRead('42', 'INBOX/Sent', true);
+
+        self::assertSame(['folder' => 'INBOX/Sent', 'uid' => 42, 'seen' => true], $client->lastFlagChange);
+        self::assertSame(['uid' => 42, 'mailbox' => 'INBOX/Sent', 'seen' => true], $result);
+    }
+
+    public function testMarkEmailAsReadCanMarkUnread(): void
+    {
+        $client = new FakeMailClient();
+        $service = new MailService($client);
+
+        $result = $service->markEmailAsRead('7', null, false);
+
+        self::assertSame(['folder' => 'INBOX', 'uid' => 7, 'seen' => false], $client->lastFlagChange);
+        self::assertFalse($result['seen']);
+        self::assertSame('INBOX', $result['mailbox']);
+    }
+
+    public function testMarkEmailAsReadDecodesTheMailboxPath(): void
+    {
+        $client = new FakeMailClient();
+        $service = new MailService($client);
+
+        $result = $service->markEmailAsRead('3', '&AWA-CKR TODO');
+
+        self::assertSame('ŠCKR TODO', $client->lastFlagChange['folder']);
+        self::assertSame('ŠCKR TODO', $result['mailbox']);
+    }
+
+    public function testMarkEmailAsReadRejectsInvalidUid(): void
+    {
+        $service = new MailService(new FakeMailClient());
+
+        $this->expectException(MailException::class);
+        $this->expectExceptionMessage('Invalid email uid.');
+        $service->markEmailAsRead('nope', null);
+    }
+
+    public function testMarkEmailAsReadPropagatesClientErrors(): void
+    {
+        $service = new MailService(new FakeMailClient(flagError: new MailException('Email not found.')));
+
+        $this->expectException(MailException::class);
+        $this->expectExceptionMessage('Email not found.');
+        $service->markEmailAsRead('1', null);
+    }
+
+    // -----------------------------------------------------------------------
     // send_email
     // -----------------------------------------------------------------------
 
@@ -384,12 +440,84 @@ final class MailTest extends TestCase
             'bcc' => [],
             'subject' => 'Hello',
             'saved_to_sent' => false,
+            'marked_read' => false,
         ], $result);
 
         self::assertCount(1, $sender->sent);
         self::assertSame(['alice@example.com', 'bob@example.com'], $sender->sent[0]->to);
         self::assertSame('Body', $sender->sent[0]->text);
         self::assertSame('', $sender->sent[0]->html);
+    }
+
+    public function testSendEmailMarksTheOriginalAsRead(): void
+    {
+        $client = new FakeMailClient();
+        $service = new MailService($client, sender: new FakeMailSender());
+
+        $result = $service->sendEmail(
+            'a@example.com',
+            'Re: Hello',
+            'Body',
+            inReplyTo: '<abc@example.com>',
+            markReadUid: '42',
+        );
+
+        self::assertTrue($result['marked_read']);
+        self::assertSame(['folder' => 'INBOX', 'uid' => 42, 'seen' => true], $client->lastFlagChange);
+    }
+
+    public function testSendEmailMarksTheOriginalInAnotherMailbox(): void
+    {
+        $client = new FakeMailClient();
+        $service = new MailService($client, sender: new FakeMailSender());
+
+        $result = $service->sendEmail(
+            'a@example.com',
+            'Re: Hello',
+            'Body',
+            markReadUid: '7',
+            markReadMailbox: '&AWA-CKR TODO',
+        );
+
+        self::assertTrue($result['marked_read']);
+        self::assertSame('ŠCKR TODO', $client->lastFlagChange['folder']);
+    }
+
+    public function testSendEmailReportsWhenTheOriginalCouldNotBeMarkedRead(): void
+    {
+        $client = new FakeMailClient(flagError: new MailException('Email not found.'));
+        $service = new MailService($client, sender: new FakeMailSender());
+
+        $result = $service->sendEmail('a@example.com', 'S', 'B', markReadUid: '42');
+
+        self::assertFalse($result['marked_read'], 'a failed flag update must not fail the send');
+        self::assertSame('sent', $result['status']);
+    }
+
+    public function testSendEmailDoesNotMarkAnythingReadByDefault(): void
+    {
+        $client = new FakeMailClient();
+        $service = new MailService($client, sender: new FakeMailSender());
+
+        $result = $service->sendEmail('a@example.com', 'S', 'B');
+
+        self::assertFalse($result['marked_read']);
+        self::assertSame([], $client->lastFlagChange);
+    }
+
+    public function testSendEmailRejectsAnInvalidMarkReadUidBeforeSending(): void
+    {
+        $sender = new FakeMailSender();
+        $service = new MailService(new FakeMailClient(), sender: $sender);
+
+        try {
+            $service->sendEmail('a@example.com', 'S', 'B', markReadUid: 'nope');
+            self::fail('An invalid mark_read uid must be rejected.');
+        } catch (MailException $e) {
+            self::assertSame('Invalid email uid.', $e->getMessage());
+        }
+
+        self::assertCount(0, $sender->sent, 'nothing may be sent when the uid is invalid');
     }
 
     public function testSendEmailAcceptsListsOfRecipients(): void
@@ -711,6 +839,9 @@ final class FakeMailClient extends MailClient
     /** @var array<string, mixed> */
     public array $lastAttachmentRequest = [];
 
+    /** @var array<string, mixed> */
+    public array $lastFlagChange = [];
+
     /** @var list<array<string, mixed>> */
     public array $appended = [];
 
@@ -730,6 +861,7 @@ final class FakeMailClient extends MailClient
         private readonly ?array $attachment = null,
         private readonly ?string $sentFolder = 'Sent',
         private readonly ?MailException $appendError = null,
+        private readonly ?MailException $flagError = null,
     ) {
         parent::__construct([]);
     }
@@ -767,6 +899,17 @@ final class FakeMailClient extends MailClient
         $this->lastAttachmentRequest = ['folder' => $folderPath, 'uid' => $uid, 'selector' => $selector];
 
         return $this->attachment;
+    }
+
+    public function markSeen(string $folderPath, int $uid, bool $seen = true): bool
+    {
+        $this->lastFlagChange = ['folder' => $folderPath, 'uid' => $uid, 'seen' => $seen];
+
+        if (null !== $this->flagError) {
+            throw $this->flagError;
+        }
+
+        return true;
     }
 
     public function findSentFolder(?string $preferred = null): ?string

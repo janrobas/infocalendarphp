@@ -347,7 +347,7 @@ final class McpServerTest extends TestCase
                 ];
             }
 
-            public function getMessage(string $folderPath, int $uid): ?array
+            public function getMessage(string $folderPath, int $uid, bool $withBody = true): ?array
             {
                 return [
                     'uid' => $uid,

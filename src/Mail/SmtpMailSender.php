@@ -35,12 +35,15 @@ class SmtpMailSender implements MailSender
         private readonly string $password,
         private readonly bool $implicitTls = false,
         private readonly bool $validateCert = true,
+        private readonly string $from = '',
     ) {
     }
 
     /**
      * @param string $encryption "ssl" for implicit TLS (port 465), anything else
      *                           for plain SMTP with opportunistic STARTTLS (port 587)
+     * @param string $from       address shown in From; defaults to the username.
+     *                           Infomaniak lets a mailbox send as one of its aliases.
      */
     public static function create(
         string $host,
@@ -49,8 +52,9 @@ class SmtpMailSender implements MailSender
         string $username,
         string $password,
         bool $validateCert = true,
+        string $from = '',
     ): self {
-        return new self($host, $port, $username, $password, 'ssl' === strtolower(trim($encryption)), $validateCert);
+        return new self($host, $port, $username, $password, 'ssl' === strtolower(trim($encryption)), $validateCert, $from);
     }
 
     public function send(OutgoingMessage $message): array
@@ -135,7 +139,7 @@ class SmtpMailSender implements MailSender
     private function build(OutgoingMessage $message): Email
     {
         $email = (new Email())
-            ->from($this->username)
+            ->from('' !== $this->from ? $this->from : $this->username)
             ->subject($message->subject)
             ->to(...$message->to);
 

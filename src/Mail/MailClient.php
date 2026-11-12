@@ -98,68 +98,132 @@ class MailClient
     /**
      * Search messages in a mailbox. Only headers are fetched.
      *
-     * @param array{text?: string, from?: string, to?: string, subject?: string, since?: string, before?: string, unseen?: bool} $criteria
+     * The `recipient` criterion is special: it matches messages addressed to an
+     * address in To, Cc or the Delivered-To header. IMAP ANDs criteria, so it
+     * runs the search once per header and merges the results; this is what lets
+     * a mailbox alias be recognised whether it is in To, Cc or Bcc.
+     *
+     * @param array{text?: string, from?: string, to?: string, cc?: string, subject?: string, recipient?: string, since?: string, before?: string, unseen?: bool} $criteria
      *
      * @return list<array<string, mixed>>
      */
     public function searchMessages(string $folderPath, array $criteria, int $limit): array
     {
         return $this->guard(function () use ($folderPath, $criteria, $limit): array {
-            $query = $this->folder($folderPath)->query();
+            $recipient = $criteria['recipient'] ?? null;
+            if (!\is_string($recipient) || '' === $recipient) {
+                return $this->queryMessages($folderPath, $criteria, $limit);
+            }
 
-            $used = false;
-            foreach (['text' => 'whereText', 'from' => 'whereFrom', 'to' => 'whereTo', 'subject' => 'whereSubject'] as $key => $method) {
-                $value = $criteria[$key] ?? null;
-                if (\is_string($value) && '' !== $value) {
-                    $query->{$method}($value);
-                    $used = true;
+            $merged = [];
+            foreach (['to', 'cc', 'delivered-to'] as $header) {
+                try {
+                    $messages = $this->queryMessages($folderPath, $criteria, $limit, $header, $recipient);
+                } catch (\Throwable $e) {
+                    // Some servers reject a HEADER search. To and Cc have
+                    // already run by then, so keep those results rather than
+                    // failing the whole listing.
+                    if ('delivered-to' !== $header) {
+                        throw $e;
+                    }
+
+                    continue;
                 }
-            }
-            if (\is_string($criteria['since'] ?? null) && '' !== $criteria['since']) {
-                $query->whereSince($criteria['since']);
-                $used = true;
-            }
-            if (\is_string($criteria['before'] ?? null) && '' !== $criteria['before']) {
-                $query->whereBefore($criteria['before']);
-                $used = true;
-            }
-            if (true === ($criteria['unseen'] ?? false)) {
-                $query->whereUnseen();
-                $used = true;
-            }
-            if (!$used) {
-                $query->whereAll();
-            }
 
-            $messages = $query
-                ->setFetchBody(false)
-                ->setFetchOrderDesc()
-                ->leaveUnread()
-                ->limit($limit)
-                ->get();
-
-            $result = [];
-            foreach ($messages as $message) {
-                if ($message instanceof Message) {
-                    $result[] = $this->mapMessage($message, false);
+                foreach ($messages as $message) {
+                    $merged[(int) ($message['uid'] ?? 0)] = $message;
                 }
             }
 
-            return $result;
+            $messages = array_values($merged);
+            usort($messages, static fn (array $a, array $b): int => ((int) ($b['uid'] ?? 0)) <=> ((int) ($a['uid'] ?? 0)));
+
+            return \array_slice($messages, 0, $limit);
         });
     }
 
     /**
-     * Fetch a single message (including body) by UID. Returns null when it does
-     * not exist.
+     * Fetch a single message by UID. When `$withBody` is false only the headers
+     * are fetched, which is enough to apply the mail access policy before any
+     * body is downloaded. Returns null when the message does not exist.
      *
      * @return array<string, mixed>|null
      */
-    public function getMessage(string $folderPath, int $uid): ?array
+    public function getMessage(string $folderPath, int $uid, bool $withBody = true): ?array
     {
-        $message = $this->fetchMessage($folderPath, $uid);
+        $message = $this->fetchMessage($folderPath, $uid, $withBody);
 
-        return null === $message ? null : $this->mapMessage($message, true);
+        return null === $message ? null : $this->mapMessage($message, $withBody);
+    }
+
+    /**
+     * Run one IMAP search and normalize its results.
+     *
+     * @param array<string, mixed>          $criteria
+     * @param 'to'|'cc'|'delivered-to'|null $recipientHeader
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function queryMessages(
+        string $folderPath,
+        array $criteria,
+        int $limit,
+        ?string $recipientHeader = null,
+        ?string $recipient = null,
+    ): array {
+        $query = $this->folder($folderPath)->query();
+
+        $used = false;
+        foreach (['text' => 'whereText', 'from' => 'whereFrom', 'to' => 'whereTo', 'cc' => 'whereCc', 'subject' => 'whereSubject'] as $key => $method) {
+            $value = $criteria[$key] ?? null;
+            if (\is_string($value) && '' !== $value) {
+                $query->{$method}($value);
+                $used = true;
+            }
+        }
+
+        if (null !== $recipientHeader && null !== $recipient) {
+            if ('to' === $recipientHeader) {
+                $query->whereTo($recipient);
+            } elseif ('cc' === $recipientHeader) {
+                $query->whereCc($recipient);
+            } else {
+                $query->whereHeader('Delivered-To', $recipient);
+            }
+            $used = true;
+        }
+
+        if (\is_string($criteria['since'] ?? null) && '' !== $criteria['since']) {
+            $query->whereSince($criteria['since']);
+            $used = true;
+        }
+        if (\is_string($criteria['before'] ?? null) && '' !== $criteria['before']) {
+            $query->whereBefore($criteria['before']);
+            $used = true;
+        }
+        if (true === ($criteria['unseen'] ?? false)) {
+            $query->whereUnseen();
+            $used = true;
+        }
+        if (!$used) {
+            $query->whereAll();
+        }
+
+        $messages = $query
+            ->setFetchBody(false)
+            ->setFetchOrderDesc()
+            ->leaveUnread()
+            ->limit($limit)
+            ->get();
+
+        $result = [];
+        foreach ($messages as $message) {
+            if ($message instanceof Message) {
+                $result[] = $this->mapMessage($message, false);
+            }
+        }
+
+        return $result;
     }
 
     /**
@@ -315,14 +379,19 @@ class MailClient
             'subject' => $this->attribute($message->get('subject')),
             'from' => $this->attribute($message->get('from')),
             'to' => $this->attribute($message->get('to')),
+            'cc' => $this->attribute($message->get('cc')),
             'date' => $this->date($message->get('date')),
             'seen' => $flags->has('seen'),
             'flagged' => $flags->has('flagged'),
             'has_attachments' => $message->hasAttachments(),
         ];
 
+        $deliveredTo = $this->attribute($message->get('delivered_to'));
+        if ('' !== $deliveredTo) {
+            $data['delivered_to'] = $deliveredTo;
+        }
+
         if ($withBody) {
-            $data['cc'] = $this->attribute($message->get('cc'));
             $data['message_id'] = $this->attribute($message->get('message_id'));
             $data['in_reply_to'] = $this->attribute($message->get('in_reply_to'));
             $data['text'] = $message->hasTextBody() ? $message->getTextBody() : '';

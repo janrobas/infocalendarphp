@@ -34,6 +34,7 @@ final class MailService
         private readonly ?string $sentMailbox = null,
         private readonly int $maxRecipients = 10,
         private readonly int $maxSendBytes = 10485760,
+        private readonly ?MailScope $scope = null,
     ) {
     }
 
@@ -78,11 +79,38 @@ final class MailService
     }
 
     /**
+     * Whether an access policy is configured. When true, the tools only expose
+     * the mailbox/address/allowlist described by {@see MailScope}.
+     */
+    public function isScoped(): bool
+    {
+        return null !== $this->scope && $this->scope->isScoped();
+    }
+
+    /**
+     * A one-sentence description of the policy, for the MCP instructions.
+     */
+    public function scopeSummary(): ?string
+    {
+        return $this->isScoped() ? $this->scope->summary() : null;
+    }
+
+    /**
      * @return array{mailboxes: list<array<string, mixed>>}
      */
     public function listMailboxes(): array
     {
-        return ['mailboxes' => $this->client->listFolders()];
+        $folders = $this->client->listFolders();
+
+        if (null !== $this->scope) {
+            $folders = array_values(array_filter(
+                $folders,
+                fn (array $folder): bool => $this->scope->allowsMailbox((string) ($folder['path'] ?? ''))
+                    || $this->scope->allowsMailbox((string) ($folder['name'] ?? '')),
+            ));
+        }
+
+        return ['mailboxes' => $folders];
     }
 
     /**
@@ -142,7 +170,16 @@ final class MailService
      */
     public function getEmail(string $uid, ?string $mailbox, ?int $maxChars): array
     {
-        $message = $this->client->getMessage($this->mailbox($mailbox), $this->uid($uid));
+        $path = $this->mailbox($mailbox);
+        $messageUid = $this->uid($uid);
+
+        // Check the headers first so a message outside the access policy is
+        // never downloaded (or returned), even if its UID was guessed.
+        if (null !== $this->scope) {
+            $this->assertVisible($path, $messageUid);
+        }
+
+        $message = $this->client->getMessage($path, $messageUid);
         if (null === $message) {
             throw new MailException('Email not found.');
         }
@@ -180,6 +217,10 @@ final class MailService
         $path = $this->mailbox($mailbox);
         $messageUid = $this->uid($uid);
 
+        if (null !== $this->scope) {
+            $this->assertVisible($path, $messageUid);
+        }
+
         $this->client->markSeen($path, $messageUid, $read);
 
         return ['uid' => $messageUid, 'mailbox' => $path, 'seen' => $read];
@@ -204,7 +245,14 @@ final class MailService
             throw new MailException('Reading attachments is not available.');
         }
 
-        $stored = $this->client->getAttachmentContent($this->mailbox($mailbox), $this->uid($uid), $attachment);
+        $path = $this->mailbox($mailbox);
+        $messageUid = $this->uid($uid);
+
+        if (null !== $this->scope) {
+            $this->assertVisible($path, $messageUid);
+        }
+
+        $stored = $this->client->getAttachmentContent($path, $messageUid, $attachment);
         if (null === $stored) {
             throw new MailException('Attachment not found.');
         }
@@ -280,6 +328,8 @@ final class MailService
             throw new MailException(sprintf('Too many recipients; at most %d are allowed.', $this->maxRecipients));
         }
 
+        $this->scope?->assertRecipients([...$tos, ...$ccs, ...$bccs]);
+
         $subject = trim((string) $subject);
         if ('' === $subject) {
             throw new MailException('A subject is required.');
@@ -307,9 +357,13 @@ final class MailService
         $attachments = $this->outgoingAttachments($attachments);
 
         // Validate the optional replied-to uid before sending, so a bad value
-        // cannot leave a sent message behind.
+        // cannot leave a sent message behind. The access policy applies too:
+        // a message outside it can never be marked read as a side effect.
         $markReadUid = null !== $markReadUid && '' !== trim($markReadUid) ? $this->uid($markReadUid) : null;
         $markReadMailbox = null !== $markReadUid ? $this->mailbox($markReadMailbox) : null;
+        if (null !== $this->scope && null !== $markReadUid && null !== $markReadMailbox) {
+            $this->assertVisible($markReadMailbox, $markReadUid);
+        }
 
         $message = new OutgoingMessage(
             to: $tos,
@@ -410,13 +464,38 @@ final class MailService
             $criteria['unseen'] = true;
         }
 
+        if (null !== $this->scope && $this->scope->requiresRecipientMatch()) {
+            $criteria['recipient'] = $this->scope->alias();
+        }
+
         $messages = $this->client->searchMessages($path, $criteria, $this->normalizeLimit($limit));
+
+        if (null !== $this->scope) {
+            $scope = $this->scope;
+            $messages = array_values(array_filter(
+                $messages,
+                static fn (array $message): bool => $scope->allowsMessage($message),
+            ));
+        }
 
         if ($unreadOnly) {
             $messages = array_values(array_filter($messages, static fn (array $m): bool => false === ($m['seen'] ?? false)));
         }
 
         return ['messages' => $messages, 'count' => \count($messages), 'mailbox' => $path];
+    }
+
+    /**
+     * Ensure a message is inside the access policy before any state or content
+     * is touched. A message outside the policy is reported as missing, so the
+     * tools do not reveal that it exists.
+     */
+    private function assertVisible(string $path, int $uid): void
+    {
+        $headers = $this->client->getMessage($path, $uid, false);
+        if (null === $headers || null === $this->scope || !$this->scope->allowsMessage($headers)) {
+            throw new MailException('Email not found.');
+        }
     }
 
     /**
@@ -429,7 +508,19 @@ final class MailService
     {
         $mailbox = null !== $mailbox ? trim($mailbox) : '';
 
-        return '' === $mailbox ? self::DEFAULT_MAILBOX : ModifiedUtf7::decode($mailbox);
+        if ('' === $mailbox) {
+            return $this->scope?->defaultMailbox() ?? self::DEFAULT_MAILBOX;
+        }
+
+        $path = ModifiedUtf7::decode($mailbox);
+
+        if (null !== $this->scope && !$this->scope->allowsMailbox($path)) {
+            // Same message as a missing folder: the caller must not learn which
+            // other folders exist.
+            throw new MailException('Mailbox not found.');
+        }
+
+        return $path;
     }
 
     private function uid(string $uid): int

@@ -9,6 +9,7 @@ use App\Config;
 use App\Http\OAuthController;
 use App\Http\Response;
 use App\Mail\MailClient;
+use App\Mail\MailScope;
 use App\Mail\MailService;
 use App\Mail\PdfTextExtractor;
 use App\Mail\SmtpMailSender;
@@ -202,22 +203,46 @@ try {
     // Mail is optional: when no mailbox address is configured, the mail tools
     // are simply not registered. Sending is opt-in on top of that, so the send
     // tool only exists when INFOMANIAK_MAIL_SEND_ENABLED is on.
-    $mailFactory = static function () use ($config, $dataDir): ?MailService {
+    $mailFactory = static function () use ($config, $dataDir, $logger): ?MailService {
         $address = $config->get('INFOMANIAK_MAIL_ADDRESS', '') ?? '';
         if ('' === $address) {
             return null;
         }
 
+        // Fail closed: a malformed access policy disables the mail tools instead
+        // of silently exposing the whole mailbox.
+        try {
+            $scope = MailScope::fromConfig($config);
+        } catch (\Throwable $e) {
+            $logger->error('Mail tools disabled: invalid mail access policy. '.$e->getMessage());
+
+            return null;
+        }
+
         $password = $config->get('INFOMANIAK_MAIL_PASSWORD', '') ?? '';
         $maxAttachmentBytes = max(1024, $config->int('INFOMANIAK_MAIL_MAX_ATTACHMENT_BYTES', 10485760));
+        $sendEnabled = $config->bool('INFOMANIAK_MAIL_SEND_ENABLED', false);
 
-        $sender = $config->bool('INFOMANIAK_MAIL_SEND_ENABLED', false)
+        // Sending with an alias authenticates as the real mailbox but shows the
+        // alias in From. Default to the alias when one is configured.
+        $from = trim($config->get('INFOMANIAK_MAIL_FROM', '') ?? '');
+        if ('' === $from) {
+            $from = $scope?->alias() ?? $address;
+        }
+        if ($sendEnabled && false === filter_var($from, \FILTER_VALIDATE_EMAIL)) {
+            $logger->error('Mail tools disabled: INFOMANIAK_MAIL_FROM is not a valid email address.');
+
+            return null;
+        }
+
+        $sender = $sendEnabled
             ? SmtpMailSender::create(
                 $config->get('INFOMANIAK_SMTP_HOST', 'mail.infomaniak.com') ?? 'mail.infomaniak.com',
                 $config->int('INFOMANIAK_SMTP_PORT', 587),
                 $config->get('INFOMANIAK_SMTP_ENCRYPTION', 'starttls') ?? 'starttls',
                 $address,
                 $password,
+                from: $from,
             )
             : null;
 
@@ -239,6 +264,7 @@ try {
             sentMailbox: $config->get('INFOMANIAK_MAIL_SENT_MAILBOX'),
             maxRecipients: max(1, $config->int('INFOMANIAK_MAIL_MAX_RECIPIENTS', 10)),
             maxSendBytes: $maxAttachmentBytes,
+            scope: $scope,
         );
     };
 

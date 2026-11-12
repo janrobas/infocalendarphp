@@ -24,15 +24,21 @@ final class McpServer
 {
     public static function build(CalendarService $calendar, ?MailService $mail, string $sessionDir, ?LoggerInterface $logger = null): Server
     {
+        $instructions = 'The user\'s Infomaniak calendar and mailbox. Use list_calendars first to obtain a calendar_id, then use the other calendar tools. Use list_mailboxes first to obtain a mailbox path, then use the mail tools. Dates and times are ISO 8601 strings. Read-only tools never change anything. Calendar read-only tools: list_calendars, get_events, search_events, find_free_slots. Calendar mutating tools: create_event, update_event, delete_event. Mail read-only tools: list_mailboxes, list_emails, search_emails, get_email, read_attachment. Mail mutating tools: mark_email_as_read (marks one message read, or unread with read=false) and send_email. read_attachment returns the text of a PDF attachment and is only worth calling when the user asks about the contents of an attachment. send_email sends a real email to real people: only call it when the user has explicitly asked you to send a message, and state the recipients and subject before you do. When replying and the original email should end up marked read, pass its uid as mark_read_uid; that update is best effort and is reported as marked_read.';
+
+        if (null !== $mail && null !== $mail->scopeSummary()) {
+            $instructions .= ' Mail access policy: '.$mail->scopeSummary();
+        }
+
         $builder = Server::builder()
             ->setLogger($logger ?? new NullLogger())
             ->setServerInfo(
                 name: 'infomaniak',
-                version: '1.3.0',
+                version: '1.4.0',
                 title: 'Infomaniak Calendar & Mail',
                 description: 'Access the user\'s Infomaniak calendars and mailbox: list calendars, read, search, create, update and delete events, find free time slots, read and search email, mark email read or unread, read the text of PDF attachments, and send email.',
             )
-            ->setInstructions('The user\'s Infomaniak calendar and mailbox. Use list_calendars first to obtain a calendar_id, then use the other calendar tools. Use list_mailboxes first to obtain a mailbox path, then use the mail tools. Dates and times are ISO 8601 strings. Read-only tools never change anything. Calendar read-only tools: list_calendars, get_events, search_events, find_free_slots. Calendar mutating tools: create_event, update_event, delete_event. Mail read-only tools: list_mailboxes, list_emails, search_emails, get_email, read_attachment. Mail mutating tools: mark_email_as_read (marks one message read, or unread with read=false) and send_email. read_attachment returns the text of a PDF attachment and is only worth calling when the user asks about the contents of an attachment. send_email sends a real email to real people: only call it when the user has explicitly asked you to send a message, and state the recipients and subject before you do. When replying and the original email should end up marked read, pass its uid as mark_read_uid; that update is best effort and is reported as marked_read.')
+            ->setInstructions($instructions)
             ->setSession(new FileSessionStore($sessionDir))
             ->addTool(
                 handler: static fn (): array => self::guard(static fn (): array => $calendar->listCalendars()),
@@ -190,7 +196,7 @@ final class McpServer
             ->addTool(
                 handler: static fn (): array => self::guardMail(static fn (): array => $mail->listMailboxes()),
                 name: 'list_mailboxes',
-                description: 'List all mailboxes (folders) in the connected Infomaniak mailbox. Returns each mailbox\'s name and path. Use this first to obtain the mailbox required by the other mail tools: pass the returned path as the `mailbox` argument. This tool only reads data.',
+                description: 'List the mailboxes (folders) available to this server. Returns each mailbox\'s name and path. When a mail access policy is configured, only the permitted mailbox is listed and every other path is rejected. Use this first to obtain the mailbox required by the other mail tools: pass the returned path as the `mailbox` argument. This tool only reads data.',
                 annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
                 inputSchema: [
                     'type' => 'object',
@@ -202,7 +208,7 @@ final class McpServer
                     static fn (): array => $mail->listEmails($mailbox, $start, $end, $limit, $unread_only),
                 ),
                 name: 'list_emails',
-                description: 'List the most recent emails in a mailbox, newest first. Returns message headers (uid, subject, from, to, date, seen, flagged, has_attachments), not bodies. Use get_email with a uid to read a message. This tool only reads data and never marks messages as read.',
+                description: 'List the most recent emails in a mailbox, newest first. Returns message headers (uid, subject, from, to, cc, date, seen, flagged, has_attachments), not bodies. Use get_email with a uid to read a message. This tool only reads data and never marks messages as read.',
                 annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
                 inputSchema: [
                     'type' => 'object',

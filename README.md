@@ -86,6 +86,11 @@ chmod 700 data
 | `INFOMANIAK_MAIL_PORT` | IMAP port. Defaults to `993` (implicit SSL). |
 | `INFOMANIAK_MAIL_ADDRESS` | The full email address (IMAP username). Leave empty to disable the mail tools. |
 | `INFOMANIAK_MAIL_PASSWORD` | The **device/mail password** for that address (not the calendar application password). |
+| `INFOMANIAK_MAIL_ALIAS` | Optional. Only expose messages addressed to this address (To, Cc or Delivered-To). With no scope mailbox, only INBOX is readable. |
+| `INFOMANIAK_MAIL_SCOPE_MAILBOX` | Optional. Only allow this one folder, e.g. `Bot` or `INBOX/Bot`. |
+| `INFOMANIAK_MAIL_ALLOWED_SENDERS` | Optional comma-separated allowlist of visible senders. Empty means all senders. |
+| `INFOMANIAK_MAIL_ALLOWED_RECIPIENTS` | Optional comma-separated allowlist of addresses mail may be sent to. Empty means all recipients. |
+| `INFOMANIAK_MAIL_FROM` | Address shown in `From`. Defaults to `INFOMANIAK_MAIL_ALIAS`, then `INFOMANIAK_MAIL_ADDRESS`. Authentication still uses the mailbox address, so an alias works. |
 | `INFOMANIAK_MAIL_SEND_ENABLED` | `1` to enable sending email. Defaults to `0`, which means `send_email` is not registered at all. |
 | `INFOMANIAK_SMTP_HOST` | SMTP host. Defaults to `mail.infomaniak.com`. |
 | `INFOMANIAK_SMTP_PORT` | SMTP port. Defaults to `587` (STARTTLS). Use `465` with `INFOMANIAK_SMTP_ENCRYPTION=ssl`. If the host blocks both, Infomaniak also accepts `2525` with STARTTLS. |
@@ -135,11 +140,63 @@ listing, searching or opening a message never marks it as read; use
 `mark_email_as_read` (or `mark_read_uid` on `send_email`) when a message should
 be marked read.
 
+### Restricting mail to one address (access policy)
+
+An Infomaniak **alias** has no password and no storage: it forwards into the
+main mailbox. That is useful when an assistant should work only with, say,
+`bot@your-domain`, while the server authenticates as the real mailbox with its
+single device password. Set:
+
+```ini
+INFOMANIAK_MAIL_ADDRESS=me@your-domain
+INFOMANIAK_MAIL_PASSWORD=<the mailbox's device password>
+INFOMANIAK_MAIL_ALIAS=bot@your-domain
+```
+
+The policy is enforced inside the app on **every** mail tool, not by the prompt:
+
+- `list_emails`/`search_emails` search the alias as a recipient (To, Cc and
+  Delivered-To) and then re-check the headers before returning anything.
+- `get_email`, `read_attachment` and `mark_email_as_read` fetch headers first and
+  reject a message outside the policy as "Email not found"; bodies are never
+  downloaded and flags are never changed for it.
+- `list_mailboxes` returns only `INBOX` (or the configured scope mailbox), so
+  other folder names are not exposed.
+- `send_email` refuses recipients outside `INFOMANIAK_MAIL_ALLOWED_RECIPIENTS`
+  (when set) and can only mark a visible message read.
+
+Empty allowlists mean "allow everything":
+
+```ini
+# Only these senders are visible; empty hides nothing.
+INFOMANIAK_MAIL_ALLOWED_SENDERS=alice@example.com,bob@example.com
+
+# Only these recipients may be used; empty allows any recipient.
+INFOMANIAK_MAIL_ALLOWED_RECIPIENTS=alice@example.com
+```
+
+For the strongest boundary, add an Infomaniak rule that moves mail addressed to
+the alias into a dedicated folder, then set
+`INFOMANIAK_MAIL_SCOPE_MAILBOX=Bot`. The folder rule is server-side, so it also
+covers Bcc where stored headers cannot show the alias. With a dedicated folder,
+folder membership is the boundary (the recipient-header filter is relaxed) and
+the sender allowlist still applies. Without the rule, the alias header filter is
+strict and Bcc mail is only recognised when the server records a `Delivered-To`
+header for the alias.
+
+This is an app-level policy, not a credential boundary: the server still holds
+the mailbox password. It is designed so the model cannot browse other mail
+through the MCP tools. A malformed policy disables the mail tools entirely
+(fail closed) rather than exposing the full mailbox.
+
 ### Sending email
 
 Sending uses the same address and password over SMTP and is **disabled until you
 opt in** with `INFOMANIAK_MAIL_SEND_ENABLED=1`. While it is off, the
-`send_email` tool does not exist, so nothing can send on your behalf.
+`send_email` tool does not exist, so nothing can send on your behalf. The `From`
+address is `INFOMANIAK_MAIL_FROM` when set, otherwise the alias, otherwise the
+mailbox address; authentication always uses `INFOMANIAK_MAIL_ADDRESS`, so an
+alias can send through the mailbox's device password.
 
 Infomaniak accepts `mail.infomaniak.com` on port `587` with STARTTLS (their
 recommendation) or port `465` with implicit SSL. Set

@@ -44,6 +44,18 @@ final class SmtpMailSenderTest extends TestCase
         self::assertStringContainsString('Subject: Design review', $result['raw']);
     }
 
+    public function testItCanSendFromAnAliasWhileAuthenticatingAsTheMailbox(): void
+    {
+        $transport = new CapturingTransport();
+        $sender = $this->sender($transport, from: 'bot@example.com');
+
+        $sender->send($this->message());
+
+        $email = $transport->sent[0];
+        self::assertInstanceOf(Email::class, $email);
+        self::assertSame('bot@example.com', $email->getFrom()[0]->getAddress());
+    }
+
     public function testItSetsTheThreadingHeaders(): void
     {
         $transport = new CapturingTransport();
@@ -188,10 +200,10 @@ final class SmtpMailSenderTest extends TestCase
         self::assertSame('p@ss:w/rd#1?x', $dsn->getPassword());
     }
 
-    private function sender(TransportInterface $transport): SmtpMailSender
+    private function sender(TransportInterface $transport, string $from = ''): SmtpMailSender
     {
-        return new class($transport) extends SmtpMailSender {
-            public function __construct(private readonly TransportInterface $capturing)
+        return new class($transport, $from) extends SmtpMailSender {
+            public function __construct(private readonly TransportInterface $capturing, string $from)
             {
                 parent::__construct(
                     host: 'mail.infomaniak.com',
@@ -199,6 +211,7 @@ final class SmtpMailSenderTest extends TestCase
                     username: 'me@example.com',
                     password: 'secret',
                     implicitTls: false,
+                    from: $from,
                 );
             }
 

@@ -1,0 +1,23 @@
+# The deploy tool's own files and VCS internals are never uploaded.
+.git/
+.ftp-deploy/
+.ftpdeploy.json
+.ftpignore
+
+# Never upload secrets.
+.env
+
+# Runtime data lives only on the server (also list it in "protected").
+data/
+
+# Local-only clutter.
+node_modules/
+*.log
+.DS_Store
+.gitignore
+tests/
+phpunit.xml.dist
+.phpunit.cache/
+.phpunit.result.cache
+.playwright-mcp/
+session-*.md

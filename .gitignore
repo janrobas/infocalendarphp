@@ -5,6 +5,8 @@
 !/data/.htaccess
 /.phpunit.result.cache
 /.phpunit.cache/
+/.ftpdeploy.json
+/.ftp-deploy/
 composer.lock
 *.log
 /.playwright-mcp/

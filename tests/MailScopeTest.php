@@ -129,6 +129,10 @@ final class MailScopeTest extends TestCase
         self::assertTrue($scope->allowsMailbox('INBOX/Sent Items'), 'the resolved sent folder is allowed');
         self::assertFalse($scope->allowsMailbox('INBOX/Private'));
 
+        self::assertTrue($scope->allowsMailbox('Sent', 'Sent'));
+        self::assertFalse($scope->allowsMailbox('Sent Items', 'Sent'), 'only the resolved folder is meant');
+        self::assertTrue($scope->allowsMailbox('Sent Items', 'Sent Items'));
+
         self::assertSame(['recipient' => 'bot@example.com'], $scope->searchCriteria('INBOX'));
         self::assertSame(
             ['from' => 'bot@example.com'],

@@ -142,7 +142,15 @@ final class MailScope
                 }
             }
 
-            return $this->mentionsSentFolder() && $this->isSentFolder($path, $sentPath);
+            if (!$this->mentionsSentFolder()) {
+                return false;
+            }
+
+            // With a resolved sent folder, only that folder is meant; the name
+            // fallback is for when the app could not resolve one.
+            return null !== $sentPath && '' !== trim($sentPath)
+                ? self::sameFolder($path, $sentPath)
+                : $this->isSentFolder($path, null);
         }
 
         if (null !== $this->alias) {

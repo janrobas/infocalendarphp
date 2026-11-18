@@ -29,7 +29,7 @@ final class MailScopeTest extends TestCase
 
         self::assertNotNull($scope);
         self::assertSame('bot@example.com', $scope->alias());
-        self::assertNull($scope->mailbox());
+        self::assertSame([], $scope->mailboxes());
         self::assertSame('INBOX', $scope->defaultMailbox());
         self::assertTrue($scope->isScoped());
 
@@ -93,7 +93,7 @@ final class MailScopeTest extends TestCase
 
     public function testAConfiguredFolderMatchesItsNameAndPath(): void
     {
-        $scope = new MailScope(mailbox: 'Bot');
+        $scope = new MailScope(mailboxes: ['Bot']);
 
         self::assertTrue($scope->allowsMailbox('Bot'));
         self::assertTrue($scope->allowsMailbox('INBOX/Bot'));
@@ -103,7 +103,7 @@ final class MailScopeTest extends TestCase
 
     public function testADedicatedFolderDoesNotRequireTheAliasInTheHeaders(): void
     {
-        $scope = new MailScope(alias: 'bot@example.com', mailbox: 'Bot');
+        $scope = new MailScope(alias: 'bot@example.com', mailboxes: ['Bot']);
 
         self::assertFalse($scope->requiresRecipientMatch(), 'the folder rule is the boundary');
         self::assertTrue($scope->allowsMessage(['from' => 'a@example.com', 'to' => 'me@example.com']));
@@ -111,17 +111,82 @@ final class MailScopeTest extends TestCase
 
     public function testAliasFilteringStillAppliesInsideARestrictedInbox(): void
     {
-        $scope = new MailScope(alias: 'bot@example.com', mailbox: 'INBOX');
+        $scope = new MailScope(alias: 'bot@example.com', mailboxes: ['INBOX']);
 
         self::assertTrue($scope->requiresRecipientMatch());
         self::assertFalse($scope->allowsMessage(['from' => 'a@example.com', 'to' => 'me@example.com']));
+    }
+
+    public function testAnInboxAndSentListMatchesBothDirections(): void
+    {
+        $scope = new MailScope(alias: 'bot@example.com', mailboxes: ['INBOX', 'Sent']);
+
+        self::assertSame(['INBOX', 'Sent'], $scope->mailboxes());
+        self::assertSame('INBOX', $scope->defaultMailbox());
+
+        self::assertTrue($scope->allowsMailbox('INBOX'));
+        self::assertTrue($scope->allowsMailbox('Sent'));
+        self::assertTrue($scope->allowsMailbox('INBOX/Sent Items'), 'the resolved sent folder is allowed');
+        self::assertFalse($scope->allowsMailbox('INBOX/Private'));
+
+        self::assertSame(['recipient' => 'bot@example.com'], $scope->searchCriteria('INBOX'));
+        self::assertSame(
+            ['from' => 'bot@example.com'],
+            $scope->searchCriteria('INBOX/Sent Items', 'INBOX/Sent Items'),
+        );
+
+        self::assertTrue($scope->allowsMessage(['from' => 'a@example.com', 'to' => 'bot@example.com'], 'INBOX'));
+        self::assertFalse($scope->allowsMessage(['from' => 'a@example.com', 'to' => 'me@example.com'], 'INBOX'));
+        self::assertTrue($scope->allowsMessage(['from' => 'bot@example.com', 'to' => 'a@example.com'], 'Sent'));
+        self::assertFalse($scope->allowsMessage(['from' => 'me@example.com', 'to' => 'a@example.com'], 'Sent'));
+    }
+
+    public function testTheSentFolderIgnoresTheSenderAllowlist(): void
+    {
+        $scope = new MailScope(
+            alias: 'bot@example.com',
+            mailboxes: ['INBOX', 'Sent'],
+            allowedSenders: ['alice@example.com'],
+        );
+
+        self::assertTrue($scope->allowsMessage(['from' => 'bot@example.com', 'to' => 'a@example.com'], 'Sent'));
+        self::assertTrue($scope->allowsMessage(['from' => 'Alice <alice@example.com>', 'to' => 'bot@example.com'], 'INBOX'));
+        self::assertFalse($scope->allowsMessage(['from' => 'spam@example.com', 'to' => 'bot@example.com'], 'INBOX'));
+    }
+
+    public function testTheSentFolderAlsoAcceptsTheConfiguredFromAddress(): void
+    {
+        $scope = new MailScope(alias: 'bot@example.com', mailboxes: ['Sent'], sendAs: 'robot@example.com');
+
+        self::assertTrue($scope->allowsMessage(['from' => 'Robot <robot@example.com>', 'to' => 'a@example.com'], 'Sent'));
+        self::assertFalse($scope->allowsMessage(['from' => 'me@example.com', 'to' => 'a@example.com'], 'Sent'));
+    }
+
+    public function testTheMailboxListIsReadFromConfigIncludingTheLegacyKey(): void
+    {
+        $scope = MailScope::fromConfig(new Config([
+            'INFOMANIAK_MAIL_ALIAS' => 'bot@example.com',
+            'INFOMANIAK_MAIL_SCOPE_MAILBOXES' => 'INBOX, Sent Items',
+            'INFOMANIAK_MAIL_SCOPE_MAILBOX' => 'Bot',
+        ]));
+
+        self::assertNotNull($scope);
+        self::assertSame(['INBOX', 'Sent Items', 'Bot'], $scope->mailboxes());
+    }
+
+    public function testADedicatedSentFolderIsNotFilteredBySenders(): void
+    {
+        $scope = new MailScope(alias: 'bot@example.com', mailboxes: ['Bot']);
+
+        self::assertSame([], $scope->searchCriteria('Bot'));
+        self::assertTrue($scope->allowsMessage(['from' => 'a@example.com', 'to' => 'me@example.com'], 'Bot'));
     }
 
     public function testASenderAllowlistStillAppliesInADedicatedFolder(): void
     {
         $scope = new MailScope(
             alias: 'bot@example.com',
-            mailbox: 'Bot',
+            mailboxes: ['Bot'],
             allowedSenders: ['alice@example.com'],
         );
 
@@ -133,7 +198,7 @@ final class MailScopeTest extends TestCase
     {
         $scope = new MailScope(
             alias: 'bot@example.com',
-            mailbox: 'Bot',
+            mailboxes: ['Bot'],
             allowedSenders: ['alice@example.com'],
             allowedRecipients: ['alice@example.com'],
         );

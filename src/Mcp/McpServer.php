@@ -34,7 +34,7 @@ final class McpServer
             ->setLogger($logger ?? new NullLogger())
             ->setServerInfo(
                 name: 'infomaniak',
-                version: '1.4.0',
+                version: '1.5.0',
                 title: 'Infomaniak Calendar & Mail',
                 description: 'Access the user\'s Infomaniak calendars and mailbox: list calendars, read, search, create, update and delete events, find free time slots, read and search email, mark email read or unread, read the text of PDF attachments, and send email.',
             )
@@ -196,7 +196,7 @@ final class McpServer
             ->addTool(
                 handler: static fn (): array => self::guardMail(static fn (): array => $mail->listMailboxes()),
                 name: 'list_mailboxes',
-                description: 'List the mailboxes (folders) available to this server. Returns each mailbox\'s name and path. When a mail access policy is configured, only the permitted mailbox is listed and every other path is rejected. Use this first to obtain the mailbox required by the other mail tools: pass the returned path as the `mailbox` argument. This tool only reads data.',
+                description: 'List the mailboxes (folders) available to this server. Returns each mailbox\'s name and path. When a mail access policy is configured, only the permitted mailboxes are listed and every other path is rejected. Use this first to obtain the mailbox required by the other mail tools: pass the returned path as the `mailbox` argument. This tool only reads data.',
                 annotations: new ToolAnnotations(readOnlyHint: true, openWorldHint: true),
                 inputSchema: [
                     'type' => 'object',

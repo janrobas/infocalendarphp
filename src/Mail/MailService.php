@@ -23,6 +23,11 @@ final class MailService
 
     private const SEND_RATE_KEY = 'outgoing-mail';
 
+    /** Whether the sent folder has been resolved, so it is looked up once. */
+    private bool $sentFolderResolved = false;
+
+    private ?string $sentFolderPath = null;
+
     public function __construct(
         private readonly MailClient $client,
         private readonly int $maxResults = 25,
@@ -103,10 +108,11 @@ final class MailService
         $folders = $this->client->listFolders();
 
         if (null !== $this->scope) {
+            $sentPath = $this->sentFolderPath();
             $folders = array_values(array_filter(
                 $folders,
-                fn (array $folder): bool => $this->scope->allowsMailbox((string) ($folder['path'] ?? ''))
-                    || $this->scope->allowsMailbox((string) ($folder['name'] ?? '')),
+                fn (array $folder): bool => $this->scope->allowsMailbox((string) ($folder['path'] ?? ''), $sentPath)
+                    || $this->scope->allowsMailbox((string) ($folder['name'] ?? ''), $sentPath),
             ));
         }
 
@@ -464,17 +470,18 @@ final class MailService
             $criteria['unseen'] = true;
         }
 
-        if (null !== $this->scope && $this->scope->requiresRecipientMatch()) {
-            $criteria['recipient'] = $this->scope->alias();
+        if (null !== $this->scope) {
+            $criteria += $this->scope->searchCriteria($path, $this->sentFolderPath());
         }
 
         $messages = $this->client->searchMessages($path, $criteria, $this->normalizeLimit($limit));
 
         if (null !== $this->scope) {
             $scope = $this->scope;
+            $sentPath = $this->sentFolderPath();
             $messages = array_values(array_filter(
                 $messages,
-                static fn (array $message): bool => $scope->allowsMessage($message),
+                static fn (array $message): bool => $scope->allowsMessage($message, $path, $sentPath),
             ));
         }
 
@@ -493,9 +500,36 @@ final class MailService
     private function assertVisible(string $path, int $uid): void
     {
         $headers = $this->client->getMessage($path, $uid, false);
-        if (null === $headers || null === $this->scope || !$this->scope->allowsMessage($headers)) {
+        if (
+            null === $headers
+            || null === $this->scope
+            || !$this->scope->allowsMessage($headers, $path, $this->sentFolderPath())
+        ) {
             throw new MailException('Email not found.');
         }
+    }
+
+    /**
+     * Resolve (once) the folder that holds sent messages. Used by the access
+     * policy so a configured "Sent" entry keeps working when Infomaniak names
+     * the folder differently (for example "Sent Items" or "INBOX/Sent").
+     */
+    private function sentFolderPath(): ?string
+    {
+        if (null === $this->scope) {
+            return null;
+        }
+
+        if (!$this->sentFolderResolved) {
+            $this->sentFolderResolved = true;
+            try {
+                $this->sentFolderPath = $this->client->findSentFolder($this->sentMailbox);
+            } catch (\Throwable) {
+                $this->sentFolderPath = null;
+            }
+        }
+
+        return $this->sentFolderPath;
     }
 
     /**
@@ -514,7 +548,7 @@ final class MailService
 
         $path = ModifiedUtf7::decode($mailbox);
 
-        if (null !== $this->scope && !$this->scope->allowsMailbox($path)) {
+        if (null !== $this->scope && !$this->scope->allowsMailbox($path, $this->sentFolderPath())) {
             // Same message as a missing folder: the caller must not learn which
             // other folders exist.
             throw new MailException('Mailbox not found.');

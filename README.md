@@ -86,8 +86,9 @@ chmod 700 data
 | `INFOMANIAK_MAIL_PORT` | IMAP port. Defaults to `993` (implicit SSL). |
 | `INFOMANIAK_MAIL_ADDRESS` | The full email address (IMAP username). Leave empty to disable the mail tools. |
 | `INFOMANIAK_MAIL_PASSWORD` | The **device/mail password** for that address (not the calendar application password). |
-| `INFOMANIAK_MAIL_ALIAS` | Optional. Only expose messages addressed to this address (To, Cc or Delivered-To). With no scope mailbox, only INBOX is readable. |
-| `INFOMANIAK_MAIL_SCOPE_MAILBOX` | Optional. Only allow this one folder, e.g. `Bot` or `INBOX/Bot`. |
+| `INFOMANIAK_MAIL_ALIAS` | Optional. Only expose messages addressed to this address (To, Cc or Delivered-To). With no scope mailbox list, only INBOX is readable; messages sent as the alias are matched by From in the sent folder. |
+| `INFOMANIAK_MAIL_SCOPE_MAILBOXES` | Optional comma-separated list of folders that may be used, e.g. `INBOX,Sent` or `INBOX,Bot`. A sent-folder name (`Sent`, `Sent Items`, `Poslano`, …) also allows the folder the app resolves as the sent mailbox. |
+| `INFOMANIAK_MAIL_SCOPE_MAILBOX` | Deprecated. Single folder, merged into `INFOMANIAK_MAIL_SCOPE_MAILBOXES`. |
 | `INFOMANIAK_MAIL_ALLOWED_SENDERS` | Optional comma-separated allowlist of visible senders. Empty means all senders. |
 | `INFOMANIAK_MAIL_ALLOWED_RECIPIENTS` | Optional comma-separated allowlist of addresses mail may be sent to. Empty means all recipients. |
 | `INFOMANIAK_MAIL_FROM` | Address shown in `From`. Defaults to `INFOMANIAK_MAIL_ALIAS`, then `INFOMANIAK_MAIL_ADDRESS`. Authentication still uses the mailbox address, so an alias works. |
@@ -156,16 +157,17 @@ INFOMANIAK_MAIL_ALIAS=bot@your-domain
 The policy is enforced inside the app on **every** mail tool, not by the prompt:
 
 - `list_emails`/`search_emails` search the alias as a recipient (To, Cc and
-  Delivered-To) and then re-check the headers before returning anything.
+  Delivered-To) in INBOX and as a sender (`From`) in the sent folder, then
+  re-check the headers before returning anything.
 - `get_email`, `read_attachment` and `mark_email_as_read` fetch headers first and
   reject a message outside the policy as "Email not found"; bodies are never
   downloaded and flags are never changed for it.
-- `list_mailboxes` returns only `INBOX` (or the configured scope mailbox), so
-  other folder names are not exposed.
+- `list_mailboxes` returns only the configured folders (or `INBOX` when only an
+  alias is set), so other folder names are not exposed.
 - `send_email` refuses recipients outside `INFOMANIAK_MAIL_ALLOWED_RECIPIENTS`
   (when set) and can only mark a visible message read.
 
-Empty allowlists mean "allow everything":
+An empty allowlist means "allow everything":
 
 ```ini
 # Only these senders are visible; empty hides nothing.
@@ -177,12 +179,29 @@ INFOMANIAK_MAIL_ALLOWED_RECIPIENTS=alice@example.com
 
 For the strongest boundary, add an Infomaniak rule that moves mail addressed to
 the alias into a dedicated folder, then set
-`INFOMANIAK_MAIL_SCOPE_MAILBOX=Bot`. The folder rule is server-side, so it also
+`INFOMANIAK_MAIL_SCOPE_MAILBOXES=Bot`. The folder rule is server-side, so it also
 covers Bcc where stored headers cannot show the alias. With a dedicated folder,
 folder membership is the boundary (the recipient-header filter is relaxed) and
 the sender allowlist still applies. Without the rule, the alias header filter is
 strict and Bcc mail is only recognised when the server records a `Delivered-To`
 header for the alias.
+
+To see what was sent as the alias as well, add the sent folder to the list:
+
+```ini
+INFOMANIAK_MAIL_ALIAS=bot@your-domain
+INFOMANIAK_MAIL_SCOPE_MAILBOXES=INBOX,Sent
+```
+
+Inside the sent folder a message is visible when its `From` header is the alias
+(or `INFOMANIAK_MAIL_FROM`, when that differs), so sent mail is matched by
+sender rather than recipient and `INFOMANIAK_MAIL_ALLOWED_SENDERS` is not
+applied there. `Sent` stands for the folder the app resolves as the sent
+mailbox, so `Sent Items` or `INBOX/Sent` also work without changing the config;
+set `INFOMANIAK_MAIL_SENT_MAILBOX` if Infomaniak uses a name the app does not
+recognise (for example a localised one). Because an alias has no storage of its
+own, those copies live in the real mailbox's sent folder and only exist when
+`INFOMANIAK_MAIL_SAVE_SENT` is on or the message was sent through webmail.
 
 This is an app-level policy, not a credential boundary: the server still holds
 the mailbox password. It is designed so the model cannot browse other mail

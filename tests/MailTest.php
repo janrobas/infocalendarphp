@@ -858,7 +858,7 @@ final class MailTest extends TestCase
     public function testScopeMailboxAcceptsTheReadableNameAndTheFullPath(): void
     {
         $client = new FakeMailClient();
-        $service = new MailService($client, scope: new MailScope(alias: 'bot@example.com', mailbox: 'Bot'));
+        $service = new MailService($client, scope: new MailScope(alias: 'bot@example.com', mailboxes: ['Bot']));
 
         $service->listEmails('INBOX/Bot', null, null, null, false);
         self::assertSame('INBOX/Bot', $client->lastSearch['folder']);
@@ -870,7 +870,7 @@ final class MailTest extends TestCase
     public function testADedicatedScopeFolderDoesNotFilterByRecipient(): void
     {
         $client = new FakeMailClient();
-        $service = new MailService($client, scope: new MailScope(alias: 'bot@example.com', mailbox: 'Bot'));
+        $service = new MailService($client, scope: new MailScope(alias: 'bot@example.com', mailboxes: ['Bot']));
 
         $service->listEmails(null, null, null, null, false);
 
@@ -885,7 +885,7 @@ final class MailTest extends TestCase
             ['name' => 'Bot', 'path' => 'INBOX/Bot', 'delimiter' => '/', 'selectable' => true],
         ]);
 
-        $service = new MailService($client, scope: new MailScope(alias: 'bot@example.com', mailbox: 'Bot'));
+        $service = new MailService($client, scope: new MailScope(alias: 'bot@example.com', mailboxes: ['Bot']));
         $result = $service->listMailboxes();
 
         self::assertCount(1, $result['mailboxes']);
@@ -907,6 +907,65 @@ final class MailTest extends TestCase
         $result = $service->listEmails(null, null, null, null, false);
 
         self::assertSame([2], array_column($result['messages'], 'uid'));
+    }
+
+    public function testAliasScopeListsTheSentFolder(): void
+    {
+        $client = new FakeMailClient([
+            ['name' => 'INBOX', 'path' => 'INBOX', 'delimiter' => '/', 'selectable' => true],
+            ['name' => 'Sent', 'path' => 'INBOX/Sent', 'delimiter' => '/', 'selectable' => true],
+            ['name' => 'Private', 'path' => 'INBOX/Private', 'delimiter' => '/', 'selectable' => true],
+        ], sentFolder: 'INBOX/Sent');
+
+        $service = new MailService($client, scope: new MailScope(
+            alias: 'bot@example.com',
+            mailboxes: ['INBOX', 'Sent'],
+        ));
+
+        self::assertSame(
+            ['INBOX', 'INBOX/Sent'],
+            array_column($service->listMailboxes()['mailboxes'], 'path'),
+        );
+    }
+
+    public function testAliasScopeSearchesTheSentFolderBySender(): void
+    {
+        $client = new FakeMailClient([], [
+            ['uid' => 2, 'subject' => 'Sent as bot', 'from' => 'bot@example.com', 'to' => 'x@example.com', 'cc' => '', 'seen' => true, 'flagged' => false, 'has_attachments' => false],
+            ['uid' => 1, 'subject' => 'Sent privately', 'from' => 'me@example.com', 'to' => 'y@example.com', 'cc' => '', 'seen' => true, 'flagged' => false, 'has_attachments' => false],
+        ], sentFolder: 'INBOX/Sent');
+
+        $service = new MailService($client, scope: new MailScope(
+            alias: 'bot@example.com',
+            mailboxes: ['INBOX', 'Sent'],
+        ));
+
+        $result = $service->listEmails('INBOX/Sent', null, null, null, false);
+
+        self::assertSame('INBOX/Sent', $client->lastSearch['folder']);
+        self::assertSame('bot@example.com', $client->lastSearch['criteria']['from']);
+        self::assertArrayNotHasKey('recipient', $client->lastSearch['criteria']);
+        self::assertSame([2], array_column($result['messages'], 'uid'));
+    }
+
+    public function testGetEmailInTheSentFolderRejectsMailSentBySomeoneElse(): void
+    {
+        $client = new FakeMailClient([], [], [
+            'uid' => 1,
+            'subject' => 'Sent privately',
+            'from' => 'me@example.com',
+            'to' => 'a@example.com',
+            'cc' => '',
+        ], sentFolder: 'INBOX/Sent');
+
+        $service = new MailService($client, scope: new MailScope(
+            alias: 'bot@example.com',
+            mailboxes: ['INBOX', 'Sent'],
+        ));
+
+        $this->expectException(MailException::class);
+        $this->expectExceptionMessage('Email not found.');
+        $service->getEmail('1', 'INBOX/Sent', null);
     }
 
     public function testGetEmailRejectsAMessageOutsideTheScope(): void

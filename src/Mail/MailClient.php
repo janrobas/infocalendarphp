@@ -305,6 +305,7 @@ class MailClient
         $exact = [
             'sent', 'sent items', 'sent messages', 'sent mail', 'sent-mail',
             'envoyés', 'envoyes', 'gesendet', 'verzonden', 'posta inviata',
+            'poslano', 'poslana pošta', 'poslana posta',
         ];
 
         $fallback = null;

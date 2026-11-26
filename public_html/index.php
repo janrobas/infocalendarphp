@@ -203,20 +203,27 @@ try {
     // Mail is optional: when no mailbox address is configured, the mail tools
     // are simply not registered. Sending is opt-in on top of that, so the send
     // tool only exists when INFOMANIAK_MAIL_SEND_ENABLED is on.
-    $mailFactory = static function () use ($config, $dataDir, $logger): ?MailService {
+    //
+    // The same mailbox backs both MCP endpoints. `$fullAccess` builds the
+    // unscoped service used by /mcp/full: no alias, folder or address filter.
+    $mailFactory = static function (bool $fullAccess = false) use ($config, $dataDir, $logger): ?MailService {
         $address = $config->get('INFOMANIAK_MAIL_ADDRESS', '') ?? '';
         if ('' === $address) {
             return null;
         }
 
-        // Fail closed: a malformed access policy disables the mail tools instead
-        // of silently exposing the whole mailbox.
-        try {
-            $scope = MailScope::fromConfig($config);
-        } catch (\Throwable $e) {
-            $logger->error('Mail tools disabled: invalid mail access policy. '.$e->getMessage());
+        if ($fullAccess) {
+            $scope = null;
+        } else {
+            // Fail closed: a malformed access policy disables the mail tools
+            // instead of silently exposing the whole mailbox.
+            try {
+                $scope = MailScope::fromConfig($config);
+            } catch (\Throwable $e) {
+                $logger->error('Mail tools disabled: invalid mail access policy. '.$e->getMessage());
 
-            return null;
+                return null;
+            }
         }
 
         $password = $config->get('INFOMANIAK_MAIL_PASSWORD', '') ?? '';
@@ -224,8 +231,9 @@ try {
         $sendEnabled = $config->bool('INFOMANIAK_MAIL_SEND_ENABLED', false);
 
         // Sending with an alias authenticates as the real mailbox but shows the
-        // alias in From. Default to the alias when one is configured.
-        $from = trim($config->get('INFOMANIAK_MAIL_FROM', '') ?? '');
+        // alias in From. The full endpoint always sends as the mailbox address,
+        // so it never inherits the restricted endpoint's alias.
+        $from = $fullAccess ? $address : trim($config->get('INFOMANIAK_MAIL_FROM', '') ?? '');
         if ('' === $from) {
             $from = $scope?->alias() ?? $address;
         }
@@ -268,17 +276,52 @@ try {
         );
     };
 
-    $tokenValidator = new TokenValidator($tokens, $authServer);
-    $metadata = new ProtectedResourceMetadata(
-        authorizationServers: [$config->appUrl()],
-        scopesSupported: [AuthorizationServer::CALENDAR_SCOPE, AuthorizationServer::MAIL_SCOPE],
-        resource: $config->mcpUrl(),
-        resourceName: 'Infomaniak Calendar & Mail',
+    // MCP endpoints. The default `/mcp` endpoint keeps the configured mail
+    // policy. When INFOMANIAK_MAIL_FULL_ENABLED is on, `/mcp/full` exposes the
+    // same mailbox without the policy. Each endpoint gets its own protected
+    // resource metadata and token validator, so audiences cannot be swapped.
+    $scopes = [AuthorizationServer::CALENDAR_SCOPE, AuthorizationServer::MAIL_SCOPE];
+
+    $mcpEndpoints = [
+        '/mcp' => [
+            'full_mail' => false,
+            'metadata' => new ProtectedResourceMetadata(
+                authorizationServers: [$config->appUrl()],
+                scopesSupported: $scopes,
+                resource: $config->appUrl().'/mcp',
+                resourceName: 'Infomaniak Calendar & Mail',
+            ),
+            'validator' => new TokenValidator($tokens, $authServer, [
+                $config->appUrl(),
+                $config->appUrl().'/mcp',
+            ]),
+        ],
+    ];
+
+    if ($config->bool('INFOMANIAK_MAIL_FULL_ENABLED', false)) {
+        $mcpEndpoints['/mcp/full'] = [
+            'full_mail' => true,
+            'metadata' => new ProtectedResourceMetadata(
+                authorizationServers: [$config->appUrl()],
+                scopesSupported: $scopes,
+                resource: $config->appUrl().'/mcp/full',
+                resourceName: 'Infomaniak Calendar & Mail (full mailbox)',
+                metadataPaths: [ProtectedResourceMetadata::DEFAULT_METADATA_PATH.'/mcp/full'],
+            ),
+            'validator' => new TokenValidator($tokens, $authServer, [
+                $config->appUrl().'/mcp/full',
+            ]),
+        ];
+    }
+
+    $mcpFactory = static fn (bool $fullMail = false): \Mcp\Server => McpServer::build(
+        $calendarFactory(),
+        $mailFactory($fullMail),
+        $dataDir.'/sessions',
+        $logger,
     );
 
-    $mcpFactory = static fn (): \Mcp\Server => McpServer::build($calendarFactory(), $mailFactory(), $dataDir.'/sessions', $logger);
-
-    $response = route($request, $config, $oauth, $authServer, $metadata, $calendarFactory, $mailFactory, $tokenValidator, $mcpFactory, $logger);
+    $response = route($request, $config, $oauth, $authServer, $mcpEndpoints, $calendarFactory, $mailFactory, $mcpFactory, $logger);
 
     Response::emit($response);
 } catch (\Throwable $e) {
@@ -298,9 +341,10 @@ try {
 }
 
 /**
- * @param \Closure(): CalendarService $calendarFactory
- * @param \Closure(): ?MailService     $mailFactory
- * @param \Closure(): \Mcp\Server      $mcpFactory
+ * @param array<string, array{full_mail: bool, metadata: ProtectedResourceMetadata, validator: TokenValidator}> $mcpEndpoints
+ * @param \Closure(): CalendarService                                                                             $calendarFactory
+ * @param \Closure(bool=): ?MailService                                                                           $mailFactory
+ * @param \Closure(bool=): \Mcp\Server                                                                            $mcpFactory
  *
  * @return ResponseInterface
  */
@@ -309,10 +353,9 @@ function route(
     Config $config,
     OAuthController $oauth,
     AuthorizationServer $authServer,
-    ProtectedResourceMetadata $metadata,
+    array $mcpEndpoints,
     \Closure $calendarFactory,
     \Closure $mailFactory,
-    TokenValidator $tokenValidator,
     \Closure $mcpFactory,
     FileLogger $logger,
 ) {
@@ -374,8 +417,12 @@ function route(
         }
     }
 
-    if ('GET' === $method && '/.well-known/oauth-protected-resource' === $path) {
-        return Response::json($metadata->jsonSerialize());
+    if ('GET' === $method) {
+        foreach ($mcpEndpoints as $endpoint) {
+            if (\in_array($path, $endpoint['metadata']->getMetadataPaths(), true)) {
+                return Response::json($endpoint['metadata']->jsonSerialize());
+            }
+        }
     }
 
     if ('GET' === $method
@@ -403,11 +450,21 @@ function route(
         return $oauth->token($request);
     }
 
-    // The MCP endpoint is /mcp, but accept the base URL too. Some clients
-    // (including ChatGPT's connector) probe the bare domain, so both must
-    // answer with the OAuth challenge instead of a 200 landing page.
-    if ('/mcp' === $path || '/' === $path) {
-        return handleMcp($request, $config, $metadata, $tokenValidator, $mcpFactory(), $logger);
+    // The default MCP endpoint is /mcp, but accept the base URL too. Some
+    // clients (including ChatGPT's connector) probe the bare domain, so both
+    // must answer with the OAuth challenge instead of a 200 landing page.
+    $endpointPath = '/' === $path ? '/mcp' : $path;
+    if (isset($mcpEndpoints[$endpointPath])) {
+        $endpoint = $mcpEndpoints[$endpointPath];
+
+        return handleMcp(
+            $request,
+            $config,
+            $endpoint['metadata'],
+            $endpoint['validator'],
+            $mcpFactory($endpoint['full_mail']),
+            $logger,
+        );
     }
 
     return Response::json(['error' => 'not_found'], 404);

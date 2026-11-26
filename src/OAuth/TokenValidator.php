@@ -10,12 +10,22 @@ use Mcp\Server\Transport\Http\OAuth\AuthorizationTokenValidatorInterface;
 /**
  * Resource-server token validator: validates opaque access tokens issued by
  * {@see AuthorizationServer} against the filesystem token store.
+ *
+ * When the server exposes more than one MCP endpoint (for example the default
+ * endpoint and a full-mailbox one), each endpoint gets its own validator with
+ * its own resource identifiers. That keeps tokens audience-bound: a token
+ * issued for `/mcp` cannot be replayed on `/mcp/full` or vice versa.
  */
 final class TokenValidator implements AuthorizationTokenValidatorInterface
 {
+    /**
+     * @param list<string> $allowedResources resource identifiers accepted by this
+     *                                       endpoint; empty means the server defaults
+     */
     public function __construct(
         private readonly TokenStore $tokens,
         private readonly AuthorizationServer $server,
+        private readonly array $allowedResources = [],
     ) {
     }
 
@@ -31,7 +41,7 @@ final class TokenValidator implements AuthorizationTokenValidatorInterface
         }
 
         $resource = \is_string($record['resource'] ?? null) ? (string) $record['resource'] : '';
-        if ('' === $resource || !$this->server->resourceMatches($resource)) {
+        if ('' === $resource || !$this->allowsResource($resource)) {
             return AuthorizationResult::unauthorized('invalid_token', 'The access token was not issued for this resource.');
         }
 
@@ -43,5 +53,44 @@ final class TokenValidator implements AuthorizationTokenValidatorInterface
             'oauth.client_id' => (string) ($record['client_id'] ?? ''),
             'oauth.scopes' => $scopes,
         ]);
+    }
+
+    private function allowsResource(string $resource): bool
+    {
+        $expected = [] === $this->allowedResources
+            ? $this->server->allowedResources()
+            : $this->allowedResources;
+
+        $resource = self::normalizeResource($resource);
+        if (null === $resource) {
+            return false;
+        }
+
+        foreach ($expected as $candidate) {
+            if ($resource === self::normalizeResource($candidate)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Normalize a resource URI the same way {@see AuthorizationServer} does when
+     * it accepts an authorization request.
+     */
+    private static function normalizeResource(string $resource): ?string
+    {
+        $parts = parse_url(trim($resource));
+        if (false === $parts || !isset($parts['scheme'], $parts['host'])) {
+            return null;
+        }
+
+        $scheme = strtolower($parts['scheme']);
+        $host = strtolower($parts['host']);
+        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
+        $path = rtrim($parts['path'] ?? '', '/');
+
+        return $scheme.'://'.$host.$port.$path;
     }
 }

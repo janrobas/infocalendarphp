@@ -92,6 +92,7 @@ chmod 700 data
 | `INFOMANIAK_MAIL_ALLOWED_SENDERS` | Optional comma-separated allowlist of visible senders. Empty means all senders. |
 | `INFOMANIAK_MAIL_ALLOWED_RECIPIENTS` | Optional comma-separated allowlist of addresses mail may be sent to. Empty means all recipients. |
 | `INFOMANIAK_MAIL_FROM` | Address shown in `From`. Defaults to `INFOMANIAK_MAIL_ALIAS`, then `INFOMANIAK_MAIL_ADDRESS`. Authentication still uses the mailbox address, so an alias works. |
+| `INFOMANIAK_MAIL_FULL_ENABLED` | `1` to add the opt-in `/mcp/full` endpoint, which exposes the mailbox without any mail policy (and sends as `INFOMANIAK_MAIL_ADDRESS`). Defaults to `0`. |
 | `INFOMANIAK_MAIL_SEND_ENABLED` | `1` to enable sending email. Defaults to `0`, which means `send_email` is not registered at all. |
 | `INFOMANIAK_SMTP_HOST` | SMTP host. Defaults to `mail.infomaniak.com`. |
 | `INFOMANIAK_SMTP_PORT` | SMTP port. Defaults to `587` (STARTTLS). Use `465` with `INFOMANIAK_SMTP_ENCRYPTION=ssl`. If the host blocks both, Infomaniak also accepts `2525` with STARTTLS. |
@@ -207,6 +208,39 @@ This is an app-level policy, not a credential boundary: the server still holds
 the mailbox password. It is designed so the model cannot browse other mail
 through the MCP tools. A malformed policy disables the mail tools entirely
 (fail closed) rather than exposing the full mailbox.
+
+### Two connectors, different mailbox access
+
+A single deployment can expose two MCP endpoints over the same mailbox:
+
+| Endpoint | Mail access |
+| --- | --- |
+| `/mcp` (default) | Whatever the policy above allows, e.g. only `bot@your-domain`. |
+| `/mcp/full` | The whole mailbox, no alias/folder/address filtering. Sends as `INFOMANIAK_MAIL_ADDRESS`. |
+
+`/mcp/full` only exists when `INFOMANIAK_MAIL_FULL_ENABLED=1`. That makes it
+possible to connect one account to the restricted endpoint and another to the
+full one:
+
+```ini
+# Default /mcp: bot mail only
+INFOMANIAK_MAIL_ALIAS=bot@your-domain
+INFOMANIAK_MAIL_SCOPE_MAILBOXES=INBOX,Sent
+
+# Also expose /mcp/full for the second connector
+INFOMANIAK_MAIL_FULL_ENABLED=1
+```
+
+Each endpoint has its own Protected Resource Metadata
+(`/.well-known/oauth-protected-resource` and
+`/.well-known/oauth-protected-resource/mcp/full`) and its own OAuth audience.
+A token issued for `/mcp` is rejected on `/mcp/full` and vice versa, so the
+restricted connector cannot be pointed at the full endpoint with its existing
+token; it has to authorize there explicitly.
+
+The calendar tools are identical on both endpoints; only the mailbox policy and
+the `From` address differ. Sending, attachment limits and the send rate limit
+stay shared because both endpoints use the same mailbox credentials.
 
 ### Sending email
 
@@ -469,7 +503,8 @@ Supported endpoints:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/.well-known/oauth-protected-resource` | Protected Resource Metadata (RFC 9728) |
+| GET | `/.well-known/oauth-protected-resource` | Protected Resource Metadata (RFC 9728) for `/mcp` |
+| GET | `/.well-known/oauth-protected-resource/mcp/full` | Protected Resource Metadata for `/mcp/full` (when enabled) |
 | GET | `/.well-known/oauth-authorization-server` | Authorization Server Metadata (RFC 8414) |
 | GET | `/.well-known/openid-configuration` | Same AS metadata (OIDC discovery) |
 | POST | `/register` | Dynamic Client Registration (RFC 7591) |
@@ -477,7 +512,8 @@ Supported endpoints:
 | POST | `/login` | Login form handler |
 | GET/POST | `/consent` | Consent screen |
 | POST | `/token` | Token endpoint (code + refresh_token) |
-| POST | `/mcp` | MCP Streamable HTTP endpoint |
+| POST | `/mcp` | MCP Streamable HTTP endpoint (configured mail policy) |
+| POST | `/mcp/full` | MCP Streamable HTTP endpoint with full mailbox access (when `INFOMANIAK_MAIL_FULL_ENABLED=1`) |
 | GET | `/health` | Health check |
 | GET | `/health/caldav` | Calendar connectivity check |
 | GET | `/health/mail` | Mailbox connectivity check (`not_configured` when mail is disabled) |
@@ -495,7 +531,9 @@ Supported endpoints:
 2. **Enable HTTPS.** ChatGPT only connects to public HTTPS endpoints.
 
 3. **Determine the MCP URL.** This is your `APP_URL` plus `/mcp`, e.g.
-   `https://calendar.example.com/mcp`.
+   `https://calendar.example.com/mcp`. For a second connector that should see
+   the whole mailbox, use `APP_URL/mcp/full` instead (requires
+   `INFOMANIAK_MAIL_FULL_ENABLED=1`).
 
 4. **Enable Developer Mode** (for personal/custom MCP servers):
    In ChatGPT → **Settings → Security and login → Developer mode**, turn it on.
@@ -638,6 +676,8 @@ zone).
 - **OAuth:** PKCE (S256 only), exact redirect-URI validation, `state`
   passthrough, short-lived access tokens, refresh-token rotation, RFC 8707
   `resource` (audience) binding, RFC 9207 `iss` in authorization responses.
+  Each MCP endpoint (`/mcp`, `/mcp/full`) validates its own audience, so a
+  token cannot be replayed on the other endpoint.
   The server advertises the `calendar` and `mail` scopes and the consent screen
   lists what is being granted. Because this is a single-user server, scopes are
   used for explicit consent rather than per-tool enforcement.

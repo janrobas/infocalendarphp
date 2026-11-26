@@ -330,6 +330,39 @@ final class OAuthTest extends TestCase
         self::assertFalse($validator->validate('nope')->isAllowed());
     }
 
+    public function testEndpointsOnlyAcceptTheirOwnResource(): void
+    {
+        [$server, , $tokens] = $this->makeServer();
+
+        $meta = [
+            'client_id' => 'x',
+            'subject' => 'jan',
+            'scope' => 'calendar',
+        ];
+
+        $tokens->saveAccessToken('default-token', $meta + [
+            'resource' => 'https://calendar.example.com/mcp',
+        ], 3600);
+        $tokens->saveAccessToken('full-token', $meta + [
+            'resource' => 'https://calendar.example.com/mcp/full',
+        ], 3600);
+
+        $default = new TokenValidator($tokens, $server, [
+            'https://calendar.example.com',
+            'https://calendar.example.com/mcp',
+        ]);
+        $full = new TokenValidator($tokens, $server, [
+            'https://calendar.example.com/mcp/full',
+        ]);
+
+        self::assertTrue($default->validate('default-token')->isAllowed());
+        self::assertTrue($full->validate('full-token')->isAllowed());
+
+        // A token issued for one endpoint cannot be replayed on the other.
+        self::assertFalse($default->validate('full-token')->isAllowed());
+        self::assertFalse($full->validate('default-token')->isAllowed());
+    }
+
     /**
      * @return array<string, mixed>
      */

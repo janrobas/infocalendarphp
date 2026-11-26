@@ -17,9 +17,11 @@ final class OAuthTest extends TestCase
     private const REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect';
 
     /**
+     * @param list<string> $additionalResources
+     *
      * @return array{0: AuthorizationServer, 1: ClientStore, 2: TokenStore}
      */
-    private function makeServer(): array
+    private function makeServer(array $additionalResources = []): array
     {
         $config = new Config([
             'APP_URL' => 'https://calendar.example.com',
@@ -29,7 +31,7 @@ final class OAuthTest extends TestCase
 
         $clients = new ClientStore(new FileStore($this->dataDir().'/oauth/clients'));
         $tokens = TokenStore::create($this->dataDir());
-        $server = new AuthorizationServer($config, $clients, $tokens);
+        $server = new AuthorizationServer($config, $clients, $tokens, $additionalResources);
 
         return [$server, $clients, $tokens];
     }
@@ -363,10 +365,82 @@ final class OAuthTest extends TestCase
         self::assertFalse($full->validate('default-token')->isAllowed());
     }
 
+    public function testAuthorizeRejectsResourceThisServerDoesNotServe(): void
+    {
+        [$server] = $this->makeServer();
+        $client = $server->registerClient(['redirect_uris' => [self::REDIRECT]]);
+
+        try {
+            $server->validateAuthorizeRequest([
+                'response_type' => 'code',
+                'client_id' => $client['client_id'],
+                'redirect_uri' => self::REDIRECT,
+                'code_challenge' => self::challenge('x'),
+                'code_challenge_method' => 'S256',
+                'resource' => 'https://evil.example.com/mcp',
+            ]);
+            self::fail('An unserved resource must not pass authorization.');
+        } catch (OAuthException $e) {
+            self::assertSame('invalid_target', $e->error);
+        }
+    }
+
+    public function testAuthorizeRejectsFullEndpointWhileItIsDisabled(): void
+    {
+        [$server] = $this->makeServer();
+        $client = $server->registerClient(['redirect_uris' => [self::REDIRECT]]);
+
+        try {
+            $server->validateAuthorizeRequest([
+                'response_type' => 'code',
+                'client_id' => $client['client_id'],
+                'redirect_uri' => self::REDIRECT,
+                'code_challenge' => self::challenge('x'),
+                'code_challenge_method' => 'S256',
+                'resource' => 'https://calendar.example.com/mcp/full',
+            ]);
+            self::fail('The full endpoint must be rejected while it is disabled.');
+        } catch (OAuthException $e) {
+            self::assertSame('invalid_target', $e->error);
+        }
+    }
+
+    public function testFullEndpointFlowIssuesAudienceBoundToken(): void
+    {
+        [$server, , $tokens] = $this->makeServer(['https://calendar.example.com/mcp/full']);
+
+        $result = $this->issueViaFlow($server, 'https://calendar.example.com/mcp/full');
+        $token = (string) $result['access_token'];
+
+        $full = new TokenValidator($tokens, $server, ['https://calendar.example.com/mcp/full']);
+        $default = new TokenValidator($tokens, $server, [
+            'https://calendar.example.com',
+            'https://calendar.example.com/mcp',
+        ]);
+
+        self::assertTrue($full->validate($token)->isAllowed());
+        self::assertFalse($default->validate($token)->isAllowed());
+    }
+
+    public function testBaseUrlResourceStillIssuesAUsableToken(): void
+    {
+        [$server, , $tokens] = $this->makeServer();
+
+        $result = $this->issueViaFlow($server, 'https://calendar.example.com');
+        $token = (string) $result['access_token'];
+
+        $default = new TokenValidator($tokens, $server, [
+            'https://calendar.example.com',
+            'https://calendar.example.com/mcp',
+        ]);
+
+        self::assertTrue($default->validate($token)->isAllowed());
+    }
+
     /**
      * @return array<string, mixed>
      */
-    private function issueViaFlow(AuthorizationServer $server): array
+    private function issueViaFlow(AuthorizationServer $server, string $resource = 'https://calendar.example.com/mcp'): array
     {
         [$verifier, $challenge] = self::pkce();
         $client = $server->registerClient(['redirect_uris' => [self::REDIRECT]]);
@@ -377,7 +451,7 @@ final class OAuthTest extends TestCase
             'redirect_uri' => self::REDIRECT,
             'code_challenge' => $challenge,
             'code_challenge_method' => 'S256',
-            'resource' => 'https://calendar.example.com/mcp',
+            'resource' => $resource,
         ]);
 
         $code = $server->issueAuthorizationCode($auth, 'jan');

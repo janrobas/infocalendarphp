@@ -491,7 +491,9 @@ server:
    Metadata** (RFC 8414) at `/.well-known/oauth-authorization-server`.
 4. ChatGPT performs **Dynamic Client Registration** (RFC 7591) at `/register`.
 5. ChatGPT opens `/authorize` in the browser with a PKCE `code_challenge`
-   (S256) and a `resource` parameter (RFC 8707).
+   (S256) and a `resource` parameter (RFC 8707). The resource must be `APP_URL`,
+   `APP_URL/mcp`, or `APP_URL/mcp/full` when the full endpoint is enabled;
+   anything else is rejected with `invalid_target` before login or consent.
 6. The user signs in and approves access ("ChatGPT is requesting access to
    your Infomaniak Calendar").
 7. The server redirects back with `code`, `state`, and `iss` (RFC 9207).

@@ -18,9 +18,11 @@ use Psr\Http\Message\ServerRequestInterface;
 final class OAuthControllerTest extends TestCase
 {
     /**
+     * @param list<string> $additionalResources
+     *
      * @return array{0: OAuthController, 1: TokenStore, 2: Config, 3: AuthorizationServer, 4: LoginSession}
      */
-    private function makeController(): array
+    private function makeController(array $additionalResources = []): array
     {
         $config = new Config([
             'APP_URL' => 'https://calendar.example.com',
@@ -30,7 +32,7 @@ final class OAuthControllerTest extends TestCase
 
         $clients = new ClientStore(new FileStore($this->dataDir().'/oauth/clients'));
         $tokens = TokenStore::create($this->dataDir());
-        $server = new AuthorizationServer($config, $clients, $tokens);
+        $server = new AuthorizationServer($config, $clients, $tokens, $additionalResources);
         $sessions = new LoginSession('test-signing-key');
         $rateLimiter = new RateLimiter(new FileStore($this->dataDir().'/rate_limit'));
 
@@ -83,6 +85,50 @@ final class OAuthControllerTest extends TestCase
             ]);
 
         $response = $controller->authorize($request);
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertStringContainsString('<form', (string) $response->getBody());
+    }
+
+    public function testAuthorizeRejectsResourceThisServerDoesNotServe(): void
+    {
+        [$controller, , , $server] = $this->makeController();
+        $client = $server->registerClient(['redirect_uris' => ['https://chatgpt.com/callback']]);
+        [, $challenge] = $this->pkce();
+
+        $response = $controller->authorize($this->authorizeRequest($client['client_id'], $challenge, 'https://evil.example.com/mcp'));
+
+        self::assertSame(302, $response->getStatusCode());
+        self::assertStringContainsString('error=invalid_target', $response->getHeaderLine('Location'));
+    }
+
+    public function testAuthorizeRejectsFullEndpointWhileItIsDisabled(): void
+    {
+        [$controller, , , $server] = $this->makeController();
+        $client = $server->registerClient(['redirect_uris' => ['https://chatgpt.com/callback']]);
+        [, $challenge] = $this->pkce();
+
+        $response = $controller->authorize($this->authorizeRequest(
+            $client['client_id'],
+            $challenge,
+            'https://calendar.example.com/mcp/full',
+        ));
+
+        self::assertSame(302, $response->getStatusCode());
+        self::assertStringContainsString('error=invalid_target', $response->getHeaderLine('Location'));
+    }
+
+    public function testAuthorizeAcceptsFullEndpointWhenItIsEnabled(): void
+    {
+        [$controller, , , $server] = $this->makeController(['https://calendar.example.com/mcp/full']);
+        $client = $server->registerClient(['redirect_uris' => ['https://chatgpt.com/callback']]);
+        [, $challenge] = $this->pkce();
+
+        $response = $controller->authorize($this->authorizeRequest(
+            $client['client_id'],
+            $challenge,
+            'https://calendar.example.com/mcp/full',
+        ));
 
         self::assertSame(200, $response->getStatusCode());
         self::assertStringContainsString('<form', (string) $response->getBody());
@@ -197,6 +243,21 @@ final class OAuthControllerTest extends TestCase
     {
         return (new Psr17Factory())->createServerRequest('POST', $uri, ['REMOTE_ADDR' => '127.0.0.1'])
             ->withParsedBody($body);
+    }
+
+    private function authorizeRequest(string $clientId, string $challenge, string $resource): ServerRequestInterface
+    {
+        return (new Psr17Factory())->createServerRequest('GET', 'https://calendar.example.com/authorize')
+            ->withQueryParams([
+                'response_type' => 'code',
+                'client_id' => $clientId,
+                'redirect_uri' => 'https://chatgpt.com/callback',
+                'code_challenge' => $challenge,
+                'code_challenge_method' => 'S256',
+                'resource' => $resource,
+                'scope' => 'calendar',
+                'state' => 's',
+            ]);
     }
 
     /**

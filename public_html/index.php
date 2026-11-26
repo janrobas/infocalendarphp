@@ -179,7 +179,18 @@ try {
 
     $clients = new ClientStore(new FileStore($dataDir.'/oauth/clients'));
     $tokens = TokenStore::create($dataDir);
-    $authServer = new AuthorizationServer($config, $clients, $tokens);
+
+    // The full-mailbox endpoint is opt-in. It is also the only extra resource
+    // this deployment serves, so an authorization request for it must be
+    // rejected while the endpoint is off.
+    $fullMailEnabled = $config->bool('INFOMANIAK_MAIL_FULL_ENABLED', false);
+    $fullResource = $config->appUrl().'/mcp/full';
+    $authServer = new AuthorizationServer(
+        $config,
+        $clients,
+        $tokens,
+        $fullMailEnabled ? [$fullResource] : [],
+    );
 
     // Opportunistic garbage collection of expired OAuth records (~1% of requests).
     if (1 === mt_rand(1, 100)) {
@@ -298,19 +309,17 @@ try {
         ],
     ];
 
-    if ($config->bool('INFOMANIAK_MAIL_FULL_ENABLED', false)) {
+    if ($fullMailEnabled) {
         $mcpEndpoints['/mcp/full'] = [
             'full_mail' => true,
             'metadata' => new ProtectedResourceMetadata(
                 authorizationServers: [$config->appUrl()],
                 scopesSupported: $scopes,
-                resource: $config->appUrl().'/mcp/full',
+                resource: $fullResource,
                 resourceName: 'Infomaniak Calendar & Mail (full mailbox)',
                 metadataPaths: [ProtectedResourceMetadata::DEFAULT_METADATA_PATH.'/mcp/full'],
             ),
-            'validator' => new TokenValidator($tokens, $authServer, [
-                $config->appUrl().'/mcp/full',
-            ]),
+            'validator' => new TokenValidator($tokens, $authServer, [$fullResource]),
         ];
     }
 

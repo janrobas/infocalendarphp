@@ -36,6 +36,11 @@ final class OAuthException extends RuntimeException
         return new self('invalid_scope', $description, 400);
     }
 
+    public static function invalidTarget(string $description = 'The requested resource is not served by this server.'): self
+    {
+        return new self('invalid_target', $description, 400);
+    }
+
     public static function accessDenied(string $description = 'The user denied the request.'): self
     {
         return new self('access_denied', $description, 400);

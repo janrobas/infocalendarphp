@@ -29,6 +29,8 @@ final class AuthorizationServer
         private readonly Config $config,
         private readonly ClientStore $clients,
         private readonly TokenStore $tokens,
+        /** @var list<string> additional resource identifiers this deployment serves */
+        private readonly array $additionalResources = [],
     ) {
     }
 
@@ -122,9 +124,14 @@ final class AuthorizationServer
             throw OAuthException::invalidRequest('Unsupported code_challenge_method; only S256 is supported.');
         }
 
-        $resource = $this->normalizeResource($params['resource'] ?? null);
+        $resource = ResourceIdentifier::canonicalize(\is_string($params['resource'] ?? null) ? $params['resource'] : null);
         if (null === $resource) {
-            throw OAuthException::invalidRequest('resource is required (RFC 8707).');
+            throw OAuthException::invalidRequest(
+                'resource must be an absolute http(s) URI without user-info, query or fragment (RFC 8707).'
+            );
+        }
+        if (!$this->resourceMatches($resource)) {
+            throw OAuthException::invalidTarget();
         }
 
         $scope = \is_string($params['scope'] ?? null) && '' !== ($params['scope'] ?? '') ? (string) $params['scope'] : self::SCOPE;
@@ -288,11 +295,16 @@ final class AuthorizationServer
     }
 
     /**
-     * Whether the given resource identifier matches this server's own MCP endpoint.
+     * Whether the given resource identifier is one this server serves.
      */
-    public function resourceMatches(string $normalizedResource): bool
+    public function resourceMatches(string $resource): bool
     {
-        return \in_array($normalizedResource, $this->allowedResources(), true);
+        $resource = ResourceIdentifier::canonicalize($resource);
+        if (null === $resource) {
+            return false;
+        }
+
+        return \in_array($resource, $this->allowedResources(), true);
     }
 
     /**
@@ -300,10 +312,19 @@ final class AuthorizationServer
      */
     public function allowedResources(): array
     {
-        $base = $this->normalizeResource($this->config->appUrl());
-        $mcp = $this->normalizeResource($this->config->mcpUrl());
+        $resources = [
+            ResourceIdentifier::canonicalize($this->config->appUrl()),
+            ResourceIdentifier::canonicalize($this->config->mcpUrl()),
+        ];
 
-        return [$base, $mcp];
+        foreach ($this->additionalResources as $resource) {
+            $resources[] = ResourceIdentifier::canonicalize($resource);
+        }
+
+        return array_values(array_unique(array_filter(
+            $resources,
+            static fn (?string $resource): bool => null !== $resource,
+        )));
     }
 
     private function isValidScope(string $scope): bool
@@ -320,28 +341,6 @@ final class AuthorizationServer
     private function verifyPkce(string $verifier, string $challenge): bool
     {
         return hash_equals($challenge, self::base64UrlEncode(hash('sha256', $verifier, true)));
-    }
-
-    /**
-     * Normalize a resource URI for comparison, or null when malformed.
-     */
-    private function normalizeResource(mixed $resource): ?string
-    {
-        if (!\is_string($resource) || '' === $resource) {
-            return null;
-        }
-
-        $parts = parse_url($resource);
-        if (false === $parts || !isset($parts['scheme'], $parts['host'])) {
-            return null;
-        }
-
-        $scheme = strtolower($parts['scheme']);
-        $host = strtolower($parts['host']);
-        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
-        $path = rtrim($parts['path'] ?? '', '/');
-
-        return $scheme.'://'.$host.$port.$path;
     }
 
     private static function randomToken(): string

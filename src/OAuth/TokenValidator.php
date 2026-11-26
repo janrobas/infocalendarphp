@@ -61,36 +61,17 @@ final class TokenValidator implements AuthorizationTokenValidatorInterface
             ? $this->server->allowedResources()
             : $this->allowedResources;
 
-        $resource = self::normalizeResource($resource);
+        $resource = ResourceIdentifier::canonicalize($resource);
         if (null === $resource) {
             return false;
         }
 
         foreach ($expected as $candidate) {
-            if ($resource === self::normalizeResource($candidate)) {
+            if ($resource === ResourceIdentifier::canonicalize($candidate)) {
                 return true;
             }
         }
 
         return false;
-    }
-
-    /**
-     * Normalize a resource URI the same way {@see AuthorizationServer} does when
-     * it accepts an authorization request.
-     */
-    private static function normalizeResource(string $resource): ?string
-    {
-        $parts = parse_url(trim($resource));
-        if (false === $parts || !isset($parts['scheme'], $parts['host'])) {
-            return null;
-        }
-
-        $scheme = strtolower($parts['scheme']);
-        $host = strtolower($parts['host']);
-        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
-        $path = rtrim($parts['path'] ?? '', '/');
-
-        return $scheme.'://'.$host.$port.$path;
     }
 }
